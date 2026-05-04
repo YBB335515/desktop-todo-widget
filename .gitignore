@@ -4,3 +4,5 @@ __pycache__/
 *.spec
 *.log
 .claude/
+vosk-model-cn/
+_voice_debug.wav

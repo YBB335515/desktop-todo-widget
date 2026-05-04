@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import sys
+import threading
 import tkinter as tk
 from tkinter import messagebox
 from datetime import datetime, timedelta
@@ -80,6 +82,142 @@ def parse_due_time(text):
     target_dt = datetime(target_date.year, target_date.month, target_date.day,
                          hour, minute)
     return target_dt.isoformat()
+
+
+def _cn_to_digits(text):
+    """Convert Chinese number words in text to digits for parsing."""
+    cn = [
+        # compound: tens + ones (longest first, before components)
+        ("五十九", "59"), ("五十八", "58"), ("五十七", "57"), ("五十六", "56"),
+        ("五十五", "55"), ("五十四", "54"), ("五十三", "53"), ("五十二", "52"),
+        ("五十一", "51"),
+        ("四十九", "49"), ("四十八", "48"), ("四十七", "47"), ("四十六", "46"),
+        ("四十五", "45"), ("四十四", "44"), ("四十三", "43"), ("四十二", "42"),
+        ("四十一", "41"),
+        ("三十九", "39"), ("三十八", "38"), ("三十七", "37"), ("三十六", "36"),
+        ("三十五", "35"), ("三十四", "34"), ("三十三", "33"), ("三十二", "32"),
+        ("三十一", "31"),
+        ("二十九", "29"), ("二十八", "28"), ("二十七", "27"), ("二十六", "26"),
+        ("二十五", "25"), ("二十四", "24"), ("二十三", "23"), ("二十二", "22"),
+        ("二十一", "21"),
+        ("二十", "20"),
+        ("十九", "19"), ("十八", "18"), ("十七", "17"), ("十六", "16"),
+        ("十五", "15"), ("十四", "14"), ("十三", "13"), ("十二", "12"),
+        ("十一", "11"), ("十", "10"),
+        ("九", "9"), ("八", "8"), ("七", "7"), ("六", "6"),
+        ("五", "5"), ("四", "4"), ("三", "3"), ("二", "2"),
+        ("两", "2"), ("一", "1"), ("零", "0"),
+        # tens only
+        ("五十", "50"), ("四十", "40"), ("三十", "30"),
+    ]
+    result = text
+    for word, digit in cn:
+        result = result.replace(word, digit)
+    return result
+
+
+def parse_voice_task(text):
+    """Extract task content and due time from voice input.
+    e.g. "今天下午三点提醒我出去玩" -> ("出去玩", iso_string today 15:00)
+    e.g. "明天上午十点开会"       -> ("开会", iso_string tomorrow 10:00)
+    Returns (content, due_iso) or (original_text, None) if no time found.
+    """
+    text = text.strip()
+    now = datetime.now()
+
+    # ---- normalize Chinese numbers to digits ----
+    normalized = _cn_to_digits(text)
+
+    # ---- figure out target date ----
+    date_offset = 0
+    for pattern, offset in [("今天", 0), ("明天", 1), ("后天", 2)]:
+        if pattern in text:
+            date_offset = offset
+            break
+    target_date = now.date() + timedelta(days=date_offset)
+
+    # ---- figure out am/pm ----
+    am_pm = 0
+    for word, offset in [("上午", 0), ("中午", 12), ("下午", 12), ("晚上", 12),
+                         ("早晨", 0), ("早上", 0)]:
+        if word in text:
+            am_pm = offset
+            break
+
+    # ---- extract hour and minute from normalized text ----
+    hour = None
+    minute = 0
+
+    # "3点半" / "三点半" — half-past must be checked first
+    tm = re.search(r'(\d{1,2})\s*[点:：时]?\s*半', normalized)
+    if tm:
+        hour = int(tm.group(1))
+        minute = 30
+    else:
+        # "3点15分", "3:15", "3：15", "3点15", "3时15"
+        tm = re.search(r'(\d{1,2})\s*[点:：时]\s*(\d{1,2})?\s*[分]?', normalized)
+        if tm:
+            hour = int(tm.group(1))
+            minute = int(tm.group(2)) if tm.group(2) else 0
+        else:
+            # "15:30" or "3:30" (pure digits colon)
+            tm = re.search(r'(\d{1,2}):(\d{2})', normalized)
+            if tm:
+                hour = int(tm.group(1))
+                minute = int(tm.group(2))
+            else:
+                # bare "3点" or "3时" with nothing after
+                tm = re.search(r'(\d{1,2})\s*[点:：时]', normalized)
+                if tm:
+                    hour = int(tm.group(1))
+                    minute = 0
+
+    if hour is None:
+        return (text, None)
+
+    # apply am/pm offset
+    if am_pm and hour <= 12:
+        if hour == 12:
+            hour = 0 if am_pm == 0 else 12
+        else:
+            hour = hour + am_pm
+    elif hour == 12 and am_pm == 0:
+        hour = 0
+
+    hour = hour % 24
+    minute = minute % 60
+
+    try:
+        due_dt = datetime(target_date.year, target_date.month, target_date.day,
+                          hour, minute)
+        due_iso = due_dt.isoformat()
+    except ValueError:
+        return (text, None)
+
+    # ---- extract content: strip date/time words and connector verbs ----
+    content = text
+    # remove date words
+    content = re.sub(r'(今天|明天|后天)', '', content)
+    # remove am/pm words
+    content = re.sub(r'(上午|下午|中午|晚上|早晨|早上)', '', content)
+    # remove Chinese-number time expression (十二点四十五, 三点半, etc.)
+    cn_num = r'[零一二两三四五六七八九十廿卅]'
+    content = re.sub(cn_num + r'+[点:：时]' + cn_num + r'*[分半]?', '', content)
+    # remove digit time expression (12:41, 3点15分, 3点半, etc.)
+    content = re.sub(r'\d{1,2}\s*[点:：时]\s*\d{0,2}\s*[分]?', '', content)
+    content = re.sub(r'\d{1,2}点半', '', content)
+    content = re.sub(r'\d{1,2}:\d{2}', '', content)
+    # remove connector verbs
+    content = re.sub(r'(提醒我|提醒|叫我|通知我|记住|记得|要|定个|设置|帮我|给我)', '', content)
+    # remove standalone "我" if it became orphaned after connector removal
+    content = re.sub(r'^我', '', content)
+    # collapse whitespace
+    content = re.sub(r'\s+', '', content)
+
+    if not content:
+        return (text, due_iso)
+
+    return (content, due_iso)
 
 
 class DesktopTodoWidget:
@@ -307,6 +445,12 @@ class DesktopTodoWidget:
         self.entry.bind("<FocusOut>", self._on_entry_focus_out)
         self._placeholder = "输入新任务，回车添加"
         self.entry.insert(0, self._placeholder)
+
+        self.mic_btn = tk.Label(
+            input_frame, text="mic", fg=COLORS["accent"], bg=COLORS["bg"],
+            font=FONT_SMALL, cursor="hand2", padx=4)
+        self.mic_btn.pack(side=tk.RIGHT)
+        self.mic_btn.bind("<Button-1>", self._start_voice_input)
 
         self.add_btn = tk.Label(
             input_frame, text="+", fg=COLORS["accent"], bg=COLORS["bg"],
@@ -691,6 +835,236 @@ class DesktopTodoWidget:
                 return "[%s]" % dt.strftime("%m-%d %H:%M")
         except Exception:
             return ""
+
+    # ---- voice input ----
+
+    def _start_voice_input(self, event=None):
+        if getattr(self, '_recording', False):
+            self._stop_event.set()
+            self.mic_btn.configure(fg=COLORS["accent"], text="mic")
+            self._recording = False
+            return
+
+        self._recording = True
+        self._stop_event = threading.Event()
+        self.mic_btn.configure(fg=COLORS["danger"], text="stop")
+        threading.Thread(target=self._do_voice_recognition, daemon=True).start()
+        self.root.after(15000, self._voice_safety_timeout)
+
+    def _voice_safety_timeout(self):
+        if getattr(self, '_recording', False):
+            self._stop_event.set()
+            self.mic_btn.configure(fg=COLORS["accent"], text="mic")
+            self._recording = False
+
+    def _do_voice_recognition(self):
+        try:
+            import pyaudio
+        except ImportError as e:
+            import traceback
+            traceback.print_exc()
+            self._recording = False
+            self.root.after(0, lambda: self._on_voice_error(
+                "请先安装依赖: pip install PyAudio\n" + str(e)))
+            return
+
+        CHUNK, FORMAT, CHANNELS, RATE = 1024, pyaudio.paInt16, 1, 16000
+        p = None
+        stream = None
+        frames = []
+
+        try:
+            p = pyaudio.PyAudio()
+            stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE,
+                           input=True, frames_per_buffer=CHUNK)
+            print("[语音] 录音开始，点击 stop 或 15 秒后自动停止")
+        except OSError as e:
+            import traceback
+            traceback.print_exc()
+            self._recording = False
+            self.root.after(0, lambda: self._on_voice_error(f"未检测到麦克风设备\n{str(e)}"))
+            if p: p.terminate()
+            return
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._recording = False
+            self.root.after(0, lambda: self._on_voice_error(f"录音设备初始化失败: {e}"))
+            if p: p.terminate()
+            return
+
+        try:
+            while not self._stop_event.is_set():
+                data = stream.read(CHUNK, exception_on_overflow=False)
+                frames.append(data)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[语音] 录音循环异常: {e}")
+        finally:
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            if p:
+                p.terminate()
+
+        self._recording = False
+        print(f"[语音] 录音结束，采集 {len(frames)} 帧")
+
+        if not frames:
+            self.root.after(0, lambda: self.mic_btn.configure(fg=COLORS["accent"], text="mic"))
+            return
+
+        raw_data = b''.join(frames)
+        duration_sec = len(raw_data) / (RATE * 2)
+        print(f"[语音] 音频时长 {duration_sec:.1f}s")
+
+        if duration_sec < 0.3:
+            self.root.after(0, lambda: self._on_voice_error(f"录音时间太短 ({duration_sec:.1f}s)"))
+            return
+
+        # Save debug WAV in background
+        self._save_debug_wav(raw_data, RATE, CHANNELS, FORMAT)
+
+        # --- Try Vosk (offline, works in China) first ---
+        text = self._recognize_vosk(raw_data, RATE)
+        if text is None:
+            # Fallback: try Google
+            text = self._recognize_google(raw_data, RATE)
+
+        if text is None:
+            return
+
+        parsed_content, parsed_due = parse_voice_task(text)
+        print(f"[语音] 解析结果: content='{parsed_content}', due={parsed_due}")
+        self.root.after(0, lambda: self._on_voice_result(parsed_content, parsed_due))
+
+    def _recognize_vosk(self, raw_data, rate):
+        try:
+            import vosk
+            import json
+        except ImportError:
+            print("[语音] Vosk 未安装，跳过")
+            return None
+
+        model_path = os.path.expanduser("~/.vosk-model-cn")
+        if not os.path.isdir(model_path):
+            model_path = os.path.join(_BASE_DIR, "vosk-model-cn")
+        if not os.path.isdir(model_path):
+            print(f"[语音] Vosk 模型未找到: {model_path}")
+            return None
+
+        try:
+            model = vosk.Model(model_path)
+            rec = vosk.KaldiRecognizer(model, rate)
+            rec.SetWords(True)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[语音] Vosk 初始化失败: {e}")
+            return None
+
+        # Feed audio in chunks (Vosk needs small chunks for streaming)
+        chunk_size = 4000  # bytes
+        total = len(raw_data)
+        for start in range(0, total, chunk_size):
+            end = min(start + chunk_size, total)
+            rec.AcceptWaveform(raw_data[start:end])
+
+        result_json = rec.FinalResult()
+        try:
+            result = json.loads(result_json)
+            text = result.get("text", "").strip()
+        except Exception:
+            text = ""
+
+        print(f"[语音] Vosk 识别结果: '{text}'")
+        if text:
+            # Vosk returns space-separated Chinese, join properly
+            text = text.replace(" ", "")
+            return text
+        else:
+            self.root.after(0, lambda: self._on_voice_error("Vosk 未识别到语音内容"))
+            return None
+
+    def _recognize_google(self, raw_data, rate):
+        try:
+            import speech_recognition as sr
+        except ImportError:
+            print("[语音] speech_recognition 未安装")
+            return None
+
+        try:
+            recognizer = sr.Recognizer()
+            audio_data = sr.AudioData(raw_data, rate, 2)
+            print("[语音] 尝试 Google 识别...")
+            text = recognizer.recognize_google(audio_data, language="zh-CN")
+            print(f"[语音] Google 识别结果: {text}")
+            return text
+        except sr.UnknownValueError:
+            self.root.after(0, lambda: self._on_voice_error("未能识别语音内容，请重试"))
+        except sr.RequestError as e:
+            self.root.after(0, lambda: self._on_voice_error(f"语音识别服务不可用（需联网且国内可能被墙）: {e}"))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: self._on_voice_error(f"识别失败: {e}"))
+        return None
+
+    def _save_debug_wav(self, raw_data, rate, channels, fmt):
+        try:
+            import wave
+            wav_path = os.path.join(_BASE_DIR, "_voice_debug.wav")
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(channels)
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(rate)
+                wf.writeframes(raw_data)
+            print(f"[语音] 录音已保存: {wav_path}")
+        except Exception:
+            pass  # debug only, never block on this
+
+    def _on_voice_result(self, content, due_iso):
+        self.mic_btn.configure(fg=COLORS["accent"], text="mic")
+
+        if due_iso:
+            tasks = load_tasks()
+            new_id = max((t["id"] for t in tasks), default=0) + 1
+            new_task = {"id": new_id, "content": content, "done": False, "due": due_iso}
+            tasks.append(new_task)
+            save_tasks(tasks)
+            self._suppress_if_past(new_id, due_iso)
+            self._refresh_task_list()
+            if self.entry.get() == self._placeholder:
+                self.entry.delete(0, tk.END)
+                self.entry.configure(fg=COLORS["text"])
+            self.entry.delete(0, tk.END)
+            self.entry.insert(0, f"已创建: {content}")
+            self.root.after(2500, lambda: self._clear_entry_if_feedback())
+        else:
+            if self.entry.get() == self._placeholder:
+                self.entry.delete(0, tk.END)
+                self.entry.configure(fg=COLORS["text"])
+            current = self.entry.get()
+            if current:
+                self.entry.insert(tk.END, " " + content)
+            else:
+                self.entry.insert(0, content)
+
+    def _clear_entry_if_feedback(self):
+        try:
+            current = self.entry.get()
+            if current.startswith("已创建:"):
+                self.entry.delete(0, tk.END)
+                self.entry.insert(0, self._placeholder)
+                self.entry.configure(fg=COLORS["text_secondary"])
+        except Exception:
+            pass
+
+    def _on_voice_error(self, msg):
+        self.mic_btn.configure(fg=COLORS["accent"], text="mic")
+        print(f"[语音] 错误: {msg}")
+        messagebox.showwarning("语音识别", msg)
 
     # ---- render ----
 
