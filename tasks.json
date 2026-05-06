@@ -1,24 +1,31 @@
 [
   {
+    "id": 1,
+    "content": "下午三点提醒我出去玩",
+    "done": false
+  },
+  {
     "id": 2,
-    "content": "我明天要接着学习ai 学习用claude",
+    "content": "朋友出去玩",
     "done": false,
-    "due": "2026-05-04T15:00:00"
+    "due": "2026-05-07T15:00:00"
   },
   {
     "id": 3,
-    "content": "学ai",
-    "done": false
+    "content": "出去玩",
+    "done": false,
+    "due": "2026-05-07T15:00:00"
   },
   {
     "id": 4,
-    "content": "学习",
-    "done": false
+    "content": "出去玩",
+    "done": false,
+    "due": "2026-05-07T17:00:00"
   },
   {
-    "id": 7,
-    "content": "接着学习",
+    "id": 5,
+    "content": "出去玩",
     "done": false,
-    "due": "2026-05-03T22:00:00"
+    "due": "2026-05-07T17:00:00"
   }
 ]

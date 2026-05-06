@@ -1,8 +1,13 @@
-dist/
-build/
-__pycache__/
-*.spec
+# Generated / runtime files
 *.log
-.claude/
+*.wav
+__pycache__/
+build/
+dist/
+
+# Vosk model (too large, download separately)
 vosk-model-cn/
-_voice_debug.wav
+
+# PyInstaller intermediate files (keep only the hand-written .spec)
+*.spec
+!desktop_todo_widget.spec

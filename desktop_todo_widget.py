@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -15,6 +16,8 @@ if getattr(sys, 'frozen', False):
 else:
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TASKS_FILE = os.path.join(_BASE_DIR, "tasks.json")
+VOICE_LOG_FILE = os.path.join(_BASE_DIR, "_voice_error.log")
+FROZEN = getattr(sys, 'frozen', False)
 
 COLORS = {
     "bg": "#1e1e2e",
@@ -47,6 +50,16 @@ def load_tasks():
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return []
+
+
+def _voice_log(msg):
+    """Append a timestamped message to the voice error log."""
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(VOICE_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
 
 
 def save_tasks(tasks):
@@ -137,9 +150,10 @@ def parse_voice_task(text):
     target_date = now.date() + timedelta(days=date_offset)
 
     # ---- figure out am/pm ----
-    am_pm = 0
-    for word, offset in [("上午", 0), ("中午", 12), ("下午", 12), ("晚上", 12),
-                         ("早晨", 0), ("早上", 0)]:
+    am_pm = None  # None = not specified, will use heuristic
+    for word, offset in [("上午", 0), ("早晨", 0), ("早上", 0),
+                         ("中午", 12), ("下午", 12), ("晚上", 12),
+                         ("夜里", 0), ("半夜", 0), ("凌晨", 0)]:
         if word in text:
             am_pm = offset
             break
@@ -153,7 +167,19 @@ def parse_voice_task(text):
     if tm:
         hour = int(tm.group(1))
         minute = 30
-    else:
+    # "3点1刻" / "三点一刻" — quarter: "X点Y刻/可" → Y*15分钟
+    elif re.search(r'[刻可]', normalized):
+        tm = re.search(r'(\d{1,2})\s*[点:：时]\s*(\d{1,2})\s*[刻可]', normalized)
+        if tm:
+            hour = int(tm.group(1))
+            minute = int(tm.group(2)) * 15
+        else:
+            # bare "X刻/可" with no 点 (unlikely for clock but handle)
+            tm = re.search(r'(\d{1,2})\s*[刻可]', normalized)
+            if tm:
+                hour = int(tm.group(1))
+                minute = 15
+    if hour is None:
         # "3点15分", "3:15", "3：15", "3点15", "3时15"
         tm = re.search(r'(\d{1,2})\s*[点:：时]\s*(\d{1,2})?\s*[分]?', normalized)
         if tm:
@@ -175,14 +201,19 @@ def parse_voice_task(text):
     if hour is None:
         return (text, None)
 
-    # apply am/pm offset
-    if am_pm and hour <= 12:
+    # apply am/pm offset (or heuristic when not specified)
+    if am_pm is not None:
+        # User explicitly specified am/pm
         if hour == 12:
             hour = 0 if am_pm == 0 else 12
-        else:
+        elif hour <= 12:
             hour = hour + am_pm
-    elif hour == 12 and am_pm == 0:
-        hour = 0
+    else:
+        # No am/pm specified → heuristic: 1-6 = PM, 7-12 = AM
+        # "三点" without context means 3 PM, not 3 AM
+        if 1 <= hour <= 6:
+            hour = hour + 12
+        # hour 7-12 stays AM, hour 0 stays midnight
 
     hour = hour % 24
     minute = minute % 60
@@ -202,10 +233,11 @@ def parse_voice_task(text):
     content = re.sub(r'(上午|下午|中午|晚上|早晨|早上)', '', content)
     # remove Chinese-number time expression (十二点四十五, 三点半, etc.)
     cn_num = r'[零一二两三四五六七八九十廿卅]'
-    content = re.sub(cn_num + r'+[点:：时]' + cn_num + r'*[分半]?', '', content)
+    content = re.sub(cn_num + r'+[点:：时]' + cn_num + r'*[分半刻可]?', '', content)
     # remove digit time expression (12:41, 3点15分, 3点半, etc.)
     content = re.sub(r'\d{1,2}\s*[点:：时]\s*\d{0,2}\s*[分]?', '', content)
     content = re.sub(r'\d{1,2}点半', '', content)
+    content = re.sub(r'\d{1,2}\s*[点:：时]\s*\d{0,2}\s*[刻可]', '', content)
     content = re.sub(r'\d{1,2}:\d{2}', '', content)
     # remove connector verbs
     content = re.sub(r'(提醒我|提醒|叫我|通知我|记住|记得|要|定个|设置|帮我|给我)', '', content)
@@ -218,6 +250,29 @@ def parse_voice_task(text):
         return (text, due_iso)
 
     return (content, due_iso)
+
+
+def _find_vosk_model():
+    """Find Vosk CN model directory. Checks multiple locations for frozen exe support."""
+    candidates = []
+    # User home directory
+    candidates.append(os.path.expanduser("~/.vosk-model-cn"))
+    # Alongside this script (dev mode) or exe (frozen mode)
+    candidates.append(os.path.join(_BASE_DIR, "vosk-model-cn"))
+    # PyInstaller extraction directory (sys._MEIPASS)
+    if getattr(sys, 'frozen', False):
+        if hasattr(sys, '_MEIPASS'):
+            candidates.append(os.path.join(sys._MEIPASS, "vosk-model-cn"))
+        # Also check alongside the exe itself
+        candidates.append(os.path.join(os.path.dirname(sys.executable), "vosk-model-cn"))
+    for p in candidates:
+        if os.path.isdir(p) and os.path.isfile(os.path.join(p, "am", "final.mdl")):
+            return p
+    # If none found, return the first existing directory (for better error msg)
+    for p in candidates:
+        if os.path.isdir(p):
+            return p
+    return None
 
 
 class DesktopTodoWidget:
@@ -521,7 +576,14 @@ class DesktopTodoWidget:
             return
         tasks = load_tasks()
         new_id = max((t["id"] for t in tasks), default=0) + 1
-        tasks.append({"id": new_id, "content": text, "done": False})
+
+        # Try natural language parsing (e.g. "明天下午三点开会")
+        parsed_content, parsed_due = parse_voice_task(text)
+        if parsed_due:
+            tasks.append({"id": new_id, "content": parsed_content, "done": False, "due": parsed_due})
+        else:
+            tasks.append({"id": new_id, "content": text, "done": False})
+
         save_tasks(tasks)
         self.entry.delete(0, tk.END)
         self.entry.configure(fg=COLORS["text"])
@@ -845,9 +907,11 @@ class DesktopTodoWidget:
             self._recording = False
             return
 
+        _voice_log(f"=== 语音识别开始 (frozen={FROZEN}) ===")
         self._recording = True
         self._stop_event = threading.Event()
         self.mic_btn.configure(fg=COLORS["danger"], text="stop")
+        self._voice_errors = []
         threading.Thread(target=self._do_voice_recognition, daemon=True).start()
         self.root.after(15000, self._voice_safety_timeout)
 
@@ -858,157 +922,267 @@ class DesktopTodoWidget:
             self._recording = False
 
     def _do_voice_recognition(self):
-        try:
-            import pyaudio
-        except ImportError as e:
-            import traceback
-            traceback.print_exc()
-            self._recording = False
-            self.root.after(0, lambda: self._on_voice_error(
-                "请先安装依赖: pip install PyAudio\n" + str(e)))
-            return
+        rate = 16000
+        voice_errors = []
+        text = None
 
-        CHUNK, FORMAT, CHANNELS, RATE = 1024, pyaudio.paInt16, 1, 16000
-        p = None
-        stream = None
-        frames = []
-
-        try:
-            p = pyaudio.PyAudio()
-            stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE,
-                           input=True, frames_per_buffer=CHUNK)
-            print("[语音] 录音开始，点击 stop 或 15 秒后自动停止")
-        except OSError as e:
-            import traceback
-            traceback.print_exc()
-            self._recording = False
-            self.root.after(0, lambda: self._on_voice_error(f"未检测到麦克风设备\n{str(e)}"))
-            if p: p.terminate()
-            return
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self._recording = False
-            self.root.after(0, lambda: self._on_voice_error(f"录音设备初始化失败: {e}"))
-            if p: p.terminate()
-            return
-
-        try:
-            while not self._stop_event.is_set():
-                data = stream.read(CHUNK, exception_on_overflow=False)
-                frames.append(data)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"[语音] 录音循环异常: {e}")
-        finally:
-            if stream:
-                stream.stop_stream()
-                stream.close()
-            if p:
-                p.terminate()
+        # ---- Step 1: Try PyAudio recording first ----
+        _voice_log("Step 1: 尝试 PyAudio 录音...")
+        raw_data = self._capture_audio(rate, voice_errors)
 
         self._recording = False
-        print(f"[语音] 录音结束，采集 {len(frames)} 帧")
 
-        if not frames:
+        if raw_data is not None:
+            duration_sec = len(raw_data) / (rate * 2)
+            _voice_log(f"PyAudio 录音成功: {duration_sec:.1f}s, {len(raw_data)} bytes")
+            print(f"[语音] 音频时长 {duration_sec:.1f}s")
+
+            if duration_sec >= 0.3:
+                # Save debug WAV
+                self._save_debug_wav(raw_data, rate, 1, 8)
+
+                # Recognize from PCM data
+                _voice_log("Step 2: 尝试 Vosk 离线识别...")
+                text = self._recognize_vosk(raw_data, rate, voice_errors)
+                if text is None:
+                    _voice_log("Vosk 失败，尝试 Google 在线识别...")
+                    text = self._recognize_google(raw_data, rate, voice_errors)
+            else:
+                msg = f"录音时间太短 ({duration_sec:.1f}s)"
+                voice_errors.append(msg)
+                _voice_log(msg)
+        else:
+            err_summary = "; ".join(voice_errors) if voice_errors else "未知原因"
+            _voice_log(f"PyAudio 录音失败: {err_summary}")
+
+        # ---- Step 2: SAPI fallback (records AND recognizes itself, no deps) ----
+        if text is None:
+            _voice_log("PCM引擎未识别到内容，尝试 SAPI 系统引擎...")
+            print("[语音] PCM引擎未识别到内容，尝试 SAPI...")
+            text = self._recognize_sapi(voice_errors)
+
+        # ---- Final ----
+        if text is None:
+            _voice_log("所有识别引擎均失败")
+            for e in voice_errors:
+                _voice_log(f"  - {e}")
             self.root.after(0, lambda: self.mic_btn.configure(fg=COLORS["accent"], text="mic"))
+            detail = "\n".join(voice_errors) if voice_errors else "所有识别引擎均失败"
+            self.root.after(0, lambda: self._on_voice_error(
+                f"语音识别失败\n{detail}"))
             return
 
-        raw_data = b''.join(frames)
-        duration_sec = len(raw_data) / (RATE * 2)
-        print(f"[语音] 音频时长 {duration_sec:.1f}s")
-
-        if duration_sec < 0.3:
-            self.root.after(0, lambda: self._on_voice_error(f"录音时间太短 ({duration_sec:.1f}s)"))
-            return
-
-        # Save debug WAV in background
-        self._save_debug_wav(raw_data, RATE, CHANNELS, FORMAT)
-
-        # --- Try Vosk (offline, works in China) first ---
-        text = self._recognize_vosk(raw_data, RATE)
-        if text is None:
-            # Fallback: try Google
-            text = self._recognize_google(raw_data, RATE)
-
-        if text is None:
-            return
-
+        _voice_log(f"识别成功: '{text}'")
         parsed_content, parsed_due = parse_voice_task(text)
+        _voice_log(f"解析结果: content='{parsed_content}', due={parsed_due}")
         print(f"[语音] 解析结果: content='{parsed_content}', due={parsed_due}")
         self.root.after(0, lambda: self._on_voice_result(parsed_content, parsed_due))
 
-    def _recognize_vosk(self, raw_data, rate):
+    def _capture_audio(self, rate, errors):
+        """Capture audio from microphone. Returns raw PCM bytes or None."""
+        frames = []
+        p = None
+        stream = None
+
+        try:
+            import pyaudio
+            CHUNK = 1024
+            FORMAT = pyaudio.paInt16
+            CHANNELS = 1
+
+            p = pyaudio.PyAudio()
+            stream = p.open(format=FORMAT, channels=CHANNELS, rate=rate,
+                           input=True, frames_per_buffer=CHUNK)
+            print("[语音] 录音开始 (PyAudio)，点击 stop 或 15 秒后自动停止")
+            while not self._stop_event.is_set():
+                data = stream.read(CHUNK, exception_on_overflow=False)
+                frames.append(data)
+
+        except ImportError:
+            msg = "[录音] PyAudio 未安装，请运行: pip install PyAudio"
+            errors.append(msg)
+            _voice_log(msg)
+            return None
+        except OSError as e:
+            err_msg = str(e)
+            # Common PyInstaller issue: PortAudio DLL not found
+            if "No Default Input Device" in err_msg or "Device unavailable" in err_msg:
+                full_msg = "[录音] 未检测到麦克风设备，请检查麦克风是否已连接"
+            elif "9999" in err_msg or "Unanticipated host error" in err_msg:
+                full_msg = "[录音] 音频设备被占用或不可用"
+            else:
+                full_msg = f"[录音] 音频设备错误: {err_msg}"
+            errors.append(full_msg)
+            _voice_log(full_msg)
+            _voice_log(f"  PyAudio OSError 详情: {e}")
+            print(f"[语音] PyAudio 录音失败: {e}")
+            return None
+        except Exception as e:
+            full_msg = f"[录音] 音频初始化失败: {e}"
+            errors.append(full_msg)
+            _voice_log(full_msg)
+            print(f"[语音] PyAudio 录音异常: {e}")
+            return None
+        finally:
+            if stream:
+                try:
+                    stream.stop_stream()
+                    stream.close()
+                except Exception:
+                    pass
+            if p:
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+
+        if not frames:
+            errors.append("[录音] 未采集到音频帧，请检查麦克风权限")
+            return None
+
+        print(f"[语音] 录音结束，采集 {len(frames)} 帧")
+        return b''.join(frames)
+
+    def _recognize_vosk(self, raw_data, rate, errors):
         try:
             import vosk
-            import json
+            import json as json_mod
         except ImportError:
-            print("[语音] Vosk 未安装，跳过")
+            msg = "[离线Vosk] 库未安装，请运行: pip install vosk"
+            errors.append(msg)
+            _voice_log(msg)
             return None
 
-        model_path = os.path.expanduser("~/.vosk-model-cn")
-        if not os.path.isdir(model_path):
-            model_path = os.path.join(_BASE_DIR, "vosk-model-cn")
-        if not os.path.isdir(model_path):
-            print(f"[语音] Vosk 模型未找到: {model_path}")
+        model_path = _find_vosk_model()
+        if not model_path:
+            msg = (
+                "[离线Vosk] 中文模型未找到。\n"
+                "  下载地址: https://alphacephei.com/vosk/models\n"
+                "  下载 vosk-model-small-cn-0.22 并解压到以下任一位置:\n"
+                f"    • ~/.vosk-model-cn\n"
+                f"    • {_BASE_DIR}\\vosk-model-cn\n"
+            )
+            errors.append(msg)
+            _voice_log(f"Vosk 模型未找到 (搜索路径: {_BASE_DIR}, frozen={FROZEN})")
             return None
 
+        _voice_log(f"Vosk 模型路径: {model_path}")
         try:
             model = vosk.Model(model_path)
             rec = vosk.KaldiRecognizer(model, rate)
             rec.SetWords(True)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"[语音] Vosk 初始化失败: {e}")
+            msg = f"[离线Vosk] 模型加载失败 (路径: {model_path}): {e}"
+            errors.append(msg)
+            _voice_log(msg)
             return None
 
-        # Feed audio in chunks (Vosk needs small chunks for streaming)
-        chunk_size = 4000  # bytes
+        # Feed audio in chunks
+        chunk_size = 4000
         total = len(raw_data)
         for start in range(0, total, chunk_size):
             end = min(start + chunk_size, total)
             rec.AcceptWaveform(raw_data[start:end])
 
-        result_json = rec.FinalResult()
         try:
-            result = json.loads(result_json)
+            result = json_mod.loads(rec.FinalResult())
             text = result.get("text", "").strip()
         except Exception:
             text = ""
 
         print(f"[语音] Vosk 识别结果: '{text}'")
         if text:
-            # Vosk returns space-separated Chinese, join properly
-            text = text.replace(" ", "")
-            return text
-        else:
-            self.root.after(0, lambda: self._on_voice_error("Vosk 未识别到语音内容"))
-            return None
+            return text.replace(" ", "")
+        return None
 
-    def _recognize_google(self, raw_data, rate):
+    def _recognize_sapi(self, errors):
+        """Windows built-in Speech API via PowerShell (records AND recognizes).
+        No external dependencies - uses System.Speech which is built into Windows 10/11.
+        This is the most reliable fallback for PyInstaller-frozen exe."""
+        if sys.platform != "win32":
+            return None
+        _voice_log("启动 SAPI (PowerShell/System.Speech)...")
+        try:
+            ps_script = (
+                "Add-Type -AssemblyName System.Speech\n"
+                "try {\n"
+                '  $culture = [System.Globalization.CultureInfo]::GetCultureInfo("zh-CN")\n'
+                "} catch { exit 1 }\n"
+                "$engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine($culture)\n"
+                "$dictation = New-Object System.Speech.Recognition.DictationGrammar\n"
+                "$engine.LoadGrammar($dictation)\n"
+                "try {\n"
+                "  $engine.SetInputToDefaultAudioDevice()\n"
+                "} catch { exit 2 }\n"
+                '$result = $engine.Recognize([TimeSpan]::FromSeconds(8))\n'
+                "if ($result) { $result.Text } else { '' }"
+            )
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                stdin=subprocess.DEVNULL,
+                creationflags=0x08000000 if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0,
+            )
+            text = proc.stdout.strip()
+            _voice_log(f"SAPI 返回: rc={proc.returncode}, stderr='{proc.stderr.strip()[:200]}', text='{text}'")
+            print(f"[语音] Windows SAPI 识别结果: '{text}' (rc={proc.returncode})")
+            if proc.returncode == 1:
+                errors.append("[系统SAPI] 系统未安装中文语音识别语言包")
+                _voice_log("SAPI 失败: 无中文语言包 (rc=1)")
+            elif proc.returncode == 2:
+                errors.append("[系统SAPI] 无法访问麦克风设备")
+                _voice_log("SAPI 失败: 麦克风访问失败 (rc=2)")
+            elif text:
+                return text.replace(" ", "")
+            else:
+                errors.append("[系统SAPI] 未识别到语音内容（8秒内未检测到说话）")
+                _voice_log("SAPI 返回空文本")
+        except FileNotFoundError:
+            msg = "[系统SAPI] PowerShell 不可用"
+            errors.append(msg)
+            _voice_log(f"SAPI 失败: {msg}")
+        except subprocess.TimeoutExpired:
+            msg = "[系统SAPI] 识别超时（15秒内未返回结果）"
+            errors.append(msg)
+            _voice_log(f"SAPI 失败: {msg}")
+        except OSError as e:
+            msg = f"[系统SAPI] 系统错误: {e}"
+            errors.append(msg)
+            _voice_log(f"SAPI 失败: {msg}")
+        return None
+
+    def _recognize_google(self, raw_data, rate, errors):
         try:
             import speech_recognition as sr
         except ImportError:
-            print("[语音] speech_recognition 未安装")
+            msg = "[在线] speech_recognition 未安装"
+            errors.append(msg)
+            _voice_log(msg)
             return None
 
         try:
             recognizer = sr.Recognizer()
             audio_data = sr.AudioData(raw_data, rate, 2)
             print("[语音] 尝试 Google 识别...")
+            _voice_log("尝试 Google 在线识别...")
             text = recognizer.recognize_google(audio_data, language="zh-CN")
             print(f"[语音] Google 识别结果: {text}")
+            _voice_log(f"Google 识别成功: '{text}'")
             return text
         except sr.UnknownValueError:
-            self.root.after(0, lambda: self._on_voice_error("未能识别语音内容，请重试"))
+            msg = "[在线] Google 未识别到语音内容"
+            errors.append(msg)
+            _voice_log(msg)
         except sr.RequestError as e:
-            self.root.after(0, lambda: self._on_voice_error(f"语音识别服务不可用（需联网且国内可能被墙）: {e}"))
+            msg = f"[在线] Google 服务不可用（中国大陆需科学上网）: {e}"
+            errors.append(msg)
+            _voice_log(msg)
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.root.after(0, lambda: self._on_voice_error(f"识别失败: {e}"))
+            msg = f"[在线] Google 识别异常: {e}"
+            errors.append(msg)
+            _voice_log(msg)
         return None
 
     def _save_debug_wav(self, raw_data, rate, channels, fmt):
@@ -1064,7 +1238,9 @@ class DesktopTodoWidget:
     def _on_voice_error(self, msg):
         self.mic_btn.configure(fg=COLORS["accent"], text="mic")
         print(f"[语音] 错误: {msg}")
-        messagebox.showwarning("语音识别", msg)
+        _voice_log(f"最终错误: {msg}")
+        full_msg = f"{msg}\n\n详细错误日志已保存到:\n{VOICE_LOG_FILE}"
+        messagebox.showwarning("语音识别", full_msg)
 
     # ---- render ----
 
@@ -1151,5 +1327,17 @@ class DesktopTodoWidget:
 
 
 if __name__ == "__main__":
-    app = DesktopTodoWidget()
-    app.run()
+    try:
+        app = DesktopTodoWidget()
+        app.run()
+    except Exception:
+        import traceback
+        log_path = os.path.join(_BASE_DIR, "_error.log")
+        with open(log_path, "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("启动失败", f"程序异常退出，详情见:\n{log_path}")
+        except Exception:
+            pass
+        sys.exit(1)
