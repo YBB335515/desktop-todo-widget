@@ -557,73 +557,190 @@ class DesktopTodoWidget:
         messagebox.showwarning("语音识别", full_msg)
 
     def _offer_model_download(self, raw_data=None, rate=16000):
-        """Offer to download the Vosk speech model when it's missing."""
-        result = messagebox.askyesno(
-            "语音模型缺失",
-            "未找到离线语音模型（vosk-model-small-cn）。\n\n"
-            "需要下载约 42MB 的语音识别模型才能使用语音功能。\n"
-            "下载过程可能需要几分钟。\n\n"
-            "是否立即下载？",
-            parent=self.root)
-        if not result:
+        """Offer to download the Vosk speech model when it's missing.
+
+        Shows a choice dialog first.  On "download now", opens a progress window
+        with speed/ETA.  If the user closes the progress window, the download
+        continues in background and a notification pops up when done.
+        """
+        # ---- Step 1: choice dialog ----
+        choice_popup = tk.Toplevel(self.root)
+        choice_popup.title("语音模型缺失")
+        choice_popup.configure(bg=COLORS["bg"])
+        choice_popup.transient(self.root)
+        choice_popup.grab_set()
+        choice_popup.resizable(False, False)
+        choice_popup.geometry("400x200")
+
+        choice_popup.update_idletasks()
+        px = self.root.winfo_x() + (self.root.winfo_width() - 400) // 2
+        py = self.root.winfo_y() + (self.root.winfo_height() - 200) // 2
+        choice_popup.geometry("+%d+%d" % (px, py))
+
+        msg = tk.Label(
+            choice_popup,
+            text="未找到离线语音模型\n\n需要下载约 42MB 的语音识别模型\n才能使用语音功能。\n下载过程可能需要几分钟。",
+            fg=COLORS["text"], bg=COLORS["bg"], font=FONT, justify=tk.CENTER)
+        msg.pack(pady=(25, 20))
+
+        btn_frame = tk.Frame(choice_popup, bg=COLORS["bg"])
+        btn_frame.pack()
+
+        user_choice = []
+
+        def choose_download():
+            user_choice.append("download")
+            choice_popup.destroy()
+
+        def choose_later():
+            user_choice.append("later")
+            choice_popup.destroy()
+
+        later_btn = tk.Label(
+            btn_frame, text="以后再说", fg=COLORS["text_secondary"],
+            bg=COLORS["surface"], font=FONT, cursor="hand2",
+            padx=24, pady=8)
+        later_btn.pack(side=tk.LEFT, padx=(0, 16))
+        later_btn.bind("<Button-1>", lambda e: choose_later())
+        later_btn.bind("<Enter>", lambda e, lbl=later_btn: lbl.configure(fg=COLORS["text"]))
+        later_btn.bind("<Leave>", lambda e, lbl=later_btn: lbl.configure(fg=COLORS["text_secondary"]))
+
+        dl_btn = tk.Label(
+            btn_frame, text="立即下载", fg=COLORS["bg"],
+            bg=COLORS["accent"], font=FONT, cursor="hand2",
+            padx=24, pady=8)
+        dl_btn.pack(side=tk.LEFT)
+        dl_btn.bind("<Button-1>", lambda e: choose_download())
+
+        choice_popup.wait_window()
+
+        if not user_choice or user_choice[0] == "later":
             return
 
-        # Build a progress popup
+        # ---- Step 2: progress window ----
         popup = tk.Toplevel(self.root)
         popup.title("下载语音模型")
-        popup.geometry("380x120")
         popup.configure(bg=COLORS["bg"])
         popup.transient(self.root)
         popup.grab_set()
         popup.resizable(False, False)
 
-        # Center on parent
+        # Determine size based on whether we show speed/eta row
+        popup.geometry("400x170")
         popup.update_idletasks()
-        px = self.root.winfo_x() + (self.root.winfo_width() - 380) // 2
-        py = self.root.winfo_y() + (self.root.winfo_height() - 120) // 2
+        px = self.root.winfo_x() + (self.root.winfo_width() - 400) // 2
+        py = self.root.winfo_y() + (self.root.winfo_height() - 170) // 2
         popup.geometry("+%d+%d" % (px, py))
 
         status_label = tk.Label(
             popup, text="正在准备下载...", fg=COLORS["text"], bg=COLORS["bg"],
             font=FONT)
-        status_label.pack(pady=(20, 10))
+        status_label.pack(pady=(20, 8))
 
         import tkinter.ttk as ttk
         progress = ttk.Progressbar(
-            popup, mode="determinate", length=340, maximum=100)
-        progress.pack(pady=(0, 20))
+            popup, mode="determinate", length=360, maximum=100)
+        progress.pack(pady=(0, 4))
 
-        def update_progress(pct, status):
+        detail_label = tk.Label(
+            popup, text="", fg=COLORS["text_secondary"], bg=COLORS["bg"],
+            font=FONT_SMALL)
+        detail_label.pack()
+
+        # State shared with download thread
+        state = {
+            "popup_closed": False,
+            "cancelled": False,
+            "done": False,
+            "result": None,  # True = success, Exception = failure
+        }
+
+        def update_progress(pct, status, extra=None):
             try:
+                if state["popup_closed"]:
+                    return
                 progress["value"] = pct
                 status_label.configure(text=status)
+                if extra:
+                    parts = []
+                    speed = extra.get("speed", "")
+                    eta = extra.get("eta", "")
+                    if speed:
+                        parts.append(speed)
+                    if eta:
+                        parts.append(eta)
+                    detail_label.configure(text="  ".join(parts))
                 popup.update_idletasks()
             except Exception:
                 pass
 
-        error_ref = []
+        def check_cancel():
+            return state["cancelled"]
+
+        def on_popup_close():
+            state["popup_closed"] = True
+            popup.destroy()
+
+        popup.protocol("WM_DELETE_WINDOW", on_popup_close)
 
         def do_download():
             try:
-                download_vosk_model(progress_callback=update_progress)
-                popup.after(0, lambda: popup.destroy())
-                popup.after(0, lambda: messagebox.showinfo(
-                    "下载完成",
-                    "语音模型安装成功！\n\n请重新点击麦克风按钮开始语音输入。",
-                    parent=self.root))
+                download_vosk_model(
+                    progress_callback=update_progress,
+                    cancel_check=check_cancel)
+                state["result"] = True
             except Exception as e:
-                error_ref.append(str(e))
-                popup.after(0, lambda: popup.destroy())
-                popup.after(0, lambda: messagebox.showerror(
-                    "下载失败",
-                    "模型下载失败：\n%s\n\n请检查网络连接后重试。\n"
-                    "也可以手动下载 vosk-model-small-cn-0.22\n"
-                    "解压到: %s" % (error_ref[0],
-                                    os.path.expanduser("~/.vosk-model-cn")),
-                    parent=self.root))
+                state["result"] = e
+            state["done"] = True
 
-        threading.Thread(target=do_download, daemon=True).start()
+            if state["popup_closed"]:
+                # Background download finished — show notification
+                if state["result"] is True:
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "语音模型就绪",
+                        "语音识别模型已在后台下载完成！\n\n"
+                        "现在可以使用语音功能了。",
+                        parent=self.root))
+                else:
+                    err = str(state["result"])
+                    if "用户取消" not in err:
+                        self.root.after(0, lambda e=err: messagebox.showerror(
+                            "下载失败",
+                            "语音模型后台下载失败：\n%s\n\n"
+                            "下次使用语音时会再次提示下载。" % e,
+                            parent=self.root))
+            else:
+                # Popup still open — close it and show result
+                def show_result():
+                    try:
+                        popup.destroy()
+                    except Exception:
+                        pass
+                    if state["result"] is True:
+                        messagebox.showinfo(
+                            "下载完成",
+                            "语音模型安装成功！\n\n请重新点击麦克风按钮开始语音输入。",
+                            parent=self.root)
+                    else:
+                        err = str(state["result"])
+                        if "用户取消" not in err:
+                            messagebox.showerror(
+                                "下载失败",
+                                "模型下载失败：\n%s\n\n请检查网络连接后重试。\n"
+                                "也可以手动下载 vosk-model-small-cn-0.22\n"
+                                "解压到: %s" % (
+                                    err, os.path.expanduser("~/.vosk-model-cn")),
+                                parent=self.root)
+                self.root.after(0, show_result)
+
+        t = threading.Thread(target=do_download)
+        t.daemon = True
+        t.start()
         popup.wait_window()
+
+        if not state["done"]:
+            # User closed popup while download is still running
+            state["popup_closed"] = True
 
     # ---- render ----
 

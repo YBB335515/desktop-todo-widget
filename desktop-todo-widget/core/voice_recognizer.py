@@ -47,58 +47,136 @@ def find_vosk_model():
     return None
 
 
-def download_vosk_model(progress_callback=None):
+def download_vosk_model(progress_callback=None, cancel_check=None):
     """Download and extract the Vosk small CN model (~42 MB zip, ~66 MB extracted).
 
-    progress_callback(percent, status_text) — called during download & extraction.
+    progress_callback(percent, status_text, extra) — called during download & extraction.
+      extra is a dict with keys: 'speed', 'eta', 'phase' ('connect'/'download'/'verify'/'extract').
+
+    cancel_check() — called periodically; if it returns True, download is aborted.
+
     Returns True on success, raises an exception on failure.
     """
+    import hashlib
     import shutil
     import tempfile
+    import time
     import urllib.request
     import zipfile
 
     zip_path = os.path.join(tempfile.gettempdir(), "vosk-model-small-cn-0.22.zip")
     extracted_dir = os.path.join(tempfile.gettempdir(), "vosk-model-cn-extract")
 
+    def _report(pct, status, extra=None):
+        if progress_callback:
+            progress_callback(pct, status, extra or {})
+
     # --- Download ---
     last_error = None
     downloaded = False
     for url in MODEL_URLS:
         try:
-            if progress_callback:
-                progress_callback(0, "正在连接下载服务器...")
+            _report(0, "正在连接下载服务器...", {"phase": "connect"})
             voice_log("Downloading Vosk model from: %s" % url)
             req = urllib.request.Request(url, headers={"User-Agent": "DesktopTodoWidget/1.0"})
             resp = urllib.request.urlopen(req, timeout=30)
             total = int(resp.headers.get("Content-Length", 0))
             downloaded_bytes = 0
+            t_start = time.time()
+            last_report = t_start
+            last_bytes = 0
+
             with open(zip_path, "wb") as f:
                 while True:
+                    if cancel_check and cancel_check():
+                        voice_log("Download cancelled by user")
+                        raise RuntimeError("用户取消下载")
+
                     chunk = resp.read(65536)
                     if not chunk:
                         break
                     f.write(chunk)
                     downloaded_bytes += len(chunk)
-                    if total > 0 and progress_callback:
+
+                    now = time.time()
+                    if total > 0 and now - last_report >= 0.5:
+                        last_report = now
+                        elapsed = now - t_start
                         pct = min(int(downloaded_bytes * 100 / total), 99)
                         mb = downloaded_bytes / (1024 * 1024)
                         total_mb = total / (1024 * 1024)
-                        progress_callback(pct, "下载中 %.1f / %.1f MB" % (mb, total_mb))
+
+                        # Speed
+                        speed_bps = downloaded_bytes / max(elapsed, 0.1)
+                        if speed_bps > 1024 * 1024:
+                            speed_str = "%.1f MB/s" % (speed_bps / (1024 * 1024))
+                        elif speed_bps > 1024:
+                            speed_str = "%.0f KB/s" % (speed_bps / 1024)
+                        else:
+                            speed_str = "%.0f B/s" % speed_bps
+
+                        # ETA
+                        remaining = total - downloaded_bytes
+                        if speed_bps > 0:
+                            eta_sec = remaining / speed_bps
+                            if eta_sec > 60:
+                                eta_str = "剩余 %d 分钟" % int(eta_sec / 60)
+                            else:
+                                eta_str = "剩余 %d 秒" % int(eta_sec)
+                        else:
+                            eta_str = ""
+
+                        _report(pct, "下载中 %.1f / %.1f MB" % (mb, total_mb),
+                                {"phase": "download", "speed": speed_str, "eta": eta_str})
+
             downloaded = True
             break
+        except RuntimeError:
+            raise
         except Exception as e:
             last_error = e
             voice_log("Download failed from %s: %s" % (url, e))
+            # Clean partial download
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
             continue
 
     if not downloaded:
         raise RuntimeError("模型下载失败，请检查网络连接\n%s" % (last_error or "所有下载地址均不可用"))
 
+    # --- Verify zip integrity ---
+    _report(98, "正在校验文件完整性...", {"phase": "verify"})
+    voice_log("Verifying zip integrity...")
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            bad_file = zf.testzip()
+            if bad_file is not None:
+                os.remove(zip_path)
+                raise RuntimeError("下载文件损坏 (CRC error in: %s)，请重试" % bad_file)
+    except zipfile.BadZipFile as e:
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+        raise RuntimeError("下载文件不是有效的 zip 包，请重试: %s" % e)
+
+    # Verify expected key files exist in the zip
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        names = zf.namelist()
+        has_am = any("am/final.mdl" in n for n in names)
+        has_conf = any("conf/" in n for n in names)
+        if not has_am or not has_conf:
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
+            raise RuntimeError("下载的模型包结构不完整，缺少 am/final.mdl 或 conf/")
+
     # --- Extract ---
     try:
-        if progress_callback:
-            progress_callback(95, "正在解压模型...")
+        _report(99, "正在解压模型...", {"phase": "extract"})
         voice_log("Extracting Vosk model...")
         if os.path.isdir(extracted_dir):
             shutil.rmtree(extracted_dir)
@@ -110,15 +188,18 @@ def download_vosk_model(progress_callback=None):
         # The zip contains a single top-level directory, e.g. "vosk-model-small-cn-0.22"
         inner = os.path.join(extracted_dir, os.listdir(extracted_dir)[0])
         if not os.path.isdir(os.path.join(inner, "am")):
-            # Maybe it's already the right structure
             inner = extracted_dir
+
+        # Final check: make sure the key model file exists after extraction
+        final_mdl = os.path.join(inner, "am", "final.mdl")
+        if not os.path.isfile(final_mdl):
+            raise RuntimeError("模型解压后缺少关键文件 am/final.mdl")
 
         if os.path.isdir(MODEL_DIR):
             shutil.rmtree(MODEL_DIR)
         shutil.move(inner, MODEL_DIR)
         voice_log("Model extracted to: %s" % MODEL_DIR)
     finally:
-        # Cleanup
         try:
             os.remove(zip_path)
         except OSError:
@@ -128,9 +209,7 @@ def download_vosk_model(progress_callback=None):
         except OSError:
             pass
 
-    if progress_callback:
-        progress_callback(100, "模型安装完成")
-
+    _report(100, "模型安装完成", {"phase": "done"})
     return True
 
 
