@@ -1,3 +1,4 @@
 {
-  "autostart": true
+  "autostart": true,
+  "close_action": "minimize"
 }
