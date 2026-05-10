@@ -22,10 +22,17 @@ def voice_log(msg):
         pass
 
 
+MODEL_DIR = os.path.expanduser("~/.vosk-model-cn")
+MODEL_URLS = [
+    "https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip",
+    "https://hf-mirror.com/alphacep/vosk-model-small-cn-0.22/resolve/main/vosk-model-small-cn-0.22.zip",
+]
+
+
 def find_vosk_model():
     """Find Vosk CN model directory. Checks multiple locations for frozen exe support."""
     candidates = []
-    candidates.append(os.path.expanduser("~/.vosk-model-cn"))
+    candidates.append(MODEL_DIR)
     candidates.append(os.path.join(BASE_DIR, "vosk-model-cn"))
     if FROZEN:
         if hasattr(sys, '_MEIPASS'):
@@ -38,6 +45,98 @@ def find_vosk_model():
         if os.path.isdir(p):
             return p
     return None
+
+
+def download_vosk_model(progress_callback=None):
+    """Download and extract the Vosk small CN model (~42 MB zip, ~66 MB extracted).
+
+    progress_callback(percent, status_text) — called during download & extraction.
+    Returns True on success, raises an exception on failure.
+    """
+    import shutil
+    import tempfile
+    import urllib.request
+    import zipfile
+
+    zip_path = os.path.join(tempfile.gettempdir(), "vosk-model-small-cn-0.22.zip")
+    extracted_dir = os.path.join(tempfile.gettempdir(), "vosk-model-cn-extract")
+
+    # --- Download ---
+    last_error = None
+    downloaded = False
+    for url in MODEL_URLS:
+        try:
+            if progress_callback:
+                progress_callback(0, "正在连接下载服务器...")
+            voice_log("Downloading Vosk model from: %s" % url)
+            req = urllib.request.Request(url, headers={"User-Agent": "DesktopTodoWidget/1.0"})
+            resp = urllib.request.urlopen(req, timeout=30)
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded_bytes = 0
+            with open(zip_path, "wb") as f:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded_bytes += len(chunk)
+                    if total > 0 and progress_callback:
+                        pct = min(int(downloaded_bytes * 100 / total), 99)
+                        mb = downloaded_bytes / (1024 * 1024)
+                        total_mb = total / (1024 * 1024)
+                        progress_callback(pct, "下载中 %.1f / %.1f MB" % (mb, total_mb))
+            downloaded = True
+            break
+        except Exception as e:
+            last_error = e
+            voice_log("Download failed from %s: %s" % (url, e))
+            continue
+
+    if not downloaded:
+        raise RuntimeError("模型下载失败，请检查网络连接\n%s" % (last_error or "所有下载地址均不可用"))
+
+    # --- Extract ---
+    try:
+        if progress_callback:
+            progress_callback(95, "正在解压模型...")
+        voice_log("Extracting Vosk model...")
+        if os.path.isdir(extracted_dir):
+            shutil.rmtree(extracted_dir)
+        os.makedirs(extracted_dir, exist_ok=True)
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extracted_dir)
+
+        # The zip contains a single top-level directory, e.g. "vosk-model-small-cn-0.22"
+        inner = os.path.join(extracted_dir, os.listdir(extracted_dir)[0])
+        if not os.path.isdir(os.path.join(inner, "am")):
+            # Maybe it's already the right structure
+            inner = extracted_dir
+
+        if os.path.isdir(MODEL_DIR):
+            shutil.rmtree(MODEL_DIR)
+        shutil.move(inner, MODEL_DIR)
+        voice_log("Model extracted to: %s" % MODEL_DIR)
+    finally:
+        # Cleanup
+        try:
+            os.remove(zip_path)
+        except OSError:
+            pass
+        try:
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+    if progress_callback:
+        progress_callback(100, "模型安装完成")
+
+    return True
+
+
+def is_model_missing():
+    """Return True if the Vosk model is not installed."""
+    return find_vosk_model() is None
 
 
 class VoiceRecognizer:

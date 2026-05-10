@@ -17,7 +17,8 @@ from core.reminder_service import (
 )
 from core.single_instance import release_instance
 from core.task_manager import get_next_id, load_tasks, save_tasks
-from core.voice_recognizer import VoiceRecognizer, voice_log, VOICE_LOG_FILE
+from core.voice_recognizer import VoiceRecognizer, voice_log, VOICE_LOG_FILE, \
+    download_vosk_model, is_model_missing
 from ui.close_dialog import show_close_dialog
 from ui.edit_dialog import show_task_dialog
 from ui.reminder_popup import show_reminder_popup
@@ -497,9 +498,12 @@ class DesktopTodoWidget:
                 voice_log("  - %s" % e)
             self.root.after(0, lambda: self.mic_btn.configure(
                 fg=COLORS["accent"], text="mic"))
-            detail = "\n".join(voice_errors) if voice_errors else "所有识别引擎均失败"
-            self.root.after(0, lambda: self._on_voice_error(
-                "语音识别失败\n%s" % detail))
+            if is_model_missing():
+                self.root.after(0, lambda: self._offer_model_download(raw_data, rate))
+            else:
+                detail = "\n".join(voice_errors) if voice_errors else "所有识别引擎均失败"
+                self.root.after(0, lambda: self._on_voice_error(
+                    "语音识别失败\n%s" % detail))
             return
 
         voice_log("识别成功: '%s'" % text)
@@ -551,6 +555,75 @@ class DesktopTodoWidget:
         voice_log("最终错误: %s" % msg)
         full_msg = "%s\n\n详细错误日志已保存到:\n%s" % (msg, VOICE_LOG_FILE)
         messagebox.showwarning("语音识别", full_msg)
+
+    def _offer_model_download(self, raw_data=None, rate=16000):
+        """Offer to download the Vosk speech model when it's missing."""
+        result = messagebox.askyesno(
+            "语音模型缺失",
+            "未找到离线语音模型（vosk-model-small-cn）。\n\n"
+            "需要下载约 42MB 的语音识别模型才能使用语音功能。\n"
+            "下载过程可能需要几分钟。\n\n"
+            "是否立即下载？",
+            parent=self.root)
+        if not result:
+            return
+
+        # Build a progress popup
+        popup = tk.Toplevel(self.root)
+        popup.title("下载语音模型")
+        popup.geometry("380x120")
+        popup.configure(bg=COLORS["bg"])
+        popup.transient(self.root)
+        popup.grab_set()
+        popup.resizable(False, False)
+
+        # Center on parent
+        popup.update_idletasks()
+        px = self.root.winfo_x() + (self.root.winfo_width() - 380) // 2
+        py = self.root.winfo_y() + (self.root.winfo_height() - 120) // 2
+        popup.geometry("+%d+%d" % (px, py))
+
+        status_label = tk.Label(
+            popup, text="正在准备下载...", fg=COLORS["text"], bg=COLORS["bg"],
+            font=FONT)
+        status_label.pack(pady=(20, 10))
+
+        import tkinter.ttk as ttk
+        progress = ttk.Progressbar(
+            popup, mode="determinate", length=340, maximum=100)
+        progress.pack(pady=(0, 20))
+
+        def update_progress(pct, status):
+            try:
+                progress["value"] = pct
+                status_label.configure(text=status)
+                popup.update_idletasks()
+            except Exception:
+                pass
+
+        error_ref = []
+
+        def do_download():
+            try:
+                download_vosk_model(progress_callback=update_progress)
+                popup.after(0, lambda: popup.destroy())
+                popup.after(0, lambda: messagebox.showinfo(
+                    "下载完成",
+                    "语音模型安装成功！\n\n请重新点击麦克风按钮开始语音输入。",
+                    parent=self.root))
+            except Exception as e:
+                error_ref.append(str(e))
+                popup.after(0, lambda: popup.destroy())
+                popup.after(0, lambda: messagebox.showerror(
+                    "下载失败",
+                    "模型下载失败：\n%s\n\n请检查网络连接后重试。\n"
+                    "也可以手动下载 vosk-model-small-cn-0.22\n"
+                    "解压到: %s" % (error_ref[0],
+                                    os.path.expanduser("~/.vosk-model-cn")),
+                    parent=self.root))
+
+        threading.Thread(target=do_download, daemon=True).start()
+        popup.wait_window()
 
     # ---- render ----
 
