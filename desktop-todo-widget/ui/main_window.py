@@ -474,11 +474,16 @@ class DesktopTodoWidget:
             if duration_sec >= 0.3:
                 VoiceRecognizer.save_debug_wav(raw_data, rate, 1, 8)
 
-                voice_log("Step 2: 尝试 Vosk 离线识别...")
-                text = VoiceRecognizer.recognize_vosk(raw_data, rate, voice_errors)
-                if text is None:
-                    voice_log("Vosk 失败，尝试 Google 在线识别...")
-                    text = VoiceRecognizer.recognize_google(raw_data, rate, voice_errors)
+                if is_model_missing():
+                    # Model missing: skip Vosk (will fail) and Google (hangs in China).
+                    # Go straight to SAPI, then offer download if SAPI also fails.
+                    voice_log("Vosk 模型缺失，跳过 Vosk/Google，直接尝试 SAPI...")
+                else:
+                    voice_log("Step 2: 尝试 Vosk 离线识别...")
+                    text = VoiceRecognizer.recognize_vosk(raw_data, rate, voice_errors)
+                    if text is None:
+                        voice_log("Vosk 失败，尝试 Google 在线识别...")
+                        text = VoiceRecognizer.recognize_google(raw_data, rate, voice_errors)
             else:
                 msg = "录音时间太短 (%.1fs)" % duration_sec
                 voice_errors.append(msg)
