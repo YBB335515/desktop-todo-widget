@@ -59,6 +59,7 @@ class DesktopTodoWidget:
             on_restore=self._restore_from_tray,
             on_quit=self._quit_app,
         )
+        self._tray.show()
 
         self._build_ui()
         self._refresh_task_list()
