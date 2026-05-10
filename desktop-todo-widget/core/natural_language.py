@@ -1,0 +1,175 @@
+"""Natural language time parsing for task input."""
+import re
+from datetime import datetime, timedelta
+
+
+def parse_due_time(text):
+    now = datetime.now()
+    text = text.strip()
+    if text.startswith("明天"):
+        time_str = text[2:].strip()
+        target_date = now.date() + timedelta(days=1)
+    elif text.startswith("后天"):
+        time_str = text[2:].strip()
+        target_date = now.date() + timedelta(days=2)
+    elif text.startswith("今天"):
+        time_str = text[2:].strip()
+        target_date = now.date()
+    else:
+        try:
+            dt = datetime.strptime(text, "%Y-%m-%d %H:%M")
+            return dt.isoformat()
+        except ValueError:
+            pass
+        time_str = text
+        target_date = now.date()
+    time_str = time_str.strip()
+    try:
+        hour, minute = map(int, time_str.split(":"))
+    except Exception:
+        raise ValueError("无法解析时间: " + text)
+    target_dt = datetime(target_date.year, target_date.month, target_date.day,
+                         hour, minute)
+    return target_dt.isoformat()
+
+
+def _cn_to_digits(text):
+    """Convert Chinese number words in text to digits for parsing."""
+    cn = [
+        ("五十九", "59"), ("五十八", "58"), ("五十七", "57"), ("五十六", "56"),
+        ("五十五", "55"), ("五十四", "54"), ("五十三", "53"), ("五十二", "52"),
+        ("五十一", "51"),
+        ("四十九", "49"), ("四十八", "48"), ("四十七", "47"), ("四十六", "46"),
+        ("四十五", "45"), ("四十四", "44"), ("四十三", "43"), ("四十二", "42"),
+        ("四十一", "41"),
+        ("三十九", "39"), ("三十八", "38"), ("三十七", "37"), ("三十六", "36"),
+        ("三十五", "35"), ("三十四", "34"), ("三十三", "33"), ("三十二", "32"),
+        ("三十一", "31"),
+        ("二十九", "29"), ("二十八", "28"), ("二十七", "27"), ("二十六", "26"),
+        ("二十五", "25"), ("二十四", "24"), ("二十三", "23"), ("二十二", "22"),
+        ("二十一", "21"),
+        ("二十", "20"),
+        ("十九", "19"), ("十八", "18"), ("十七", "17"), ("十六", "16"),
+        ("十五", "15"), ("十四", "14"), ("十三", "13"), ("十二", "12"),
+        ("十一", "11"), ("十", "10"),
+        ("九", "9"), ("八", "8"), ("七", "7"), ("六", "6"),
+        ("五", "5"), ("四", "4"), ("三", "3"), ("二", "2"),
+        ("两", "2"), ("一", "1"), ("零", "0"),
+        ("五十", "50"), ("四十", "40"), ("三十", "30"),
+    ]
+    result = text
+    for word, digit in cn:
+        result = result.replace(word, digit)
+    return result
+
+
+def parse_voice_task(text):
+    """Extract task content and due time from voice input.
+    e.g. "今天下午三点提醒我出去玩" -> ("出去玩", iso_string today 15:00)
+    e.g. "明天上午十点开会"       -> ("开会", iso_string tomorrow 10:00)
+    Returns (content, due_iso) or (original_text, None) if no time found.
+    """
+    text = text.strip()
+    now = datetime.now()
+
+    # normalize Chinese numbers to digits
+    normalized = _cn_to_digits(text)
+
+    # figure out target date
+    date_offset = 0
+    for pattern, offset in [("今天", 0), ("明天", 1), ("后天", 2)]:
+        if pattern in text:
+            date_offset = offset
+            break
+    target_date = now.date() + timedelta(days=date_offset)
+
+    # figure out am/pm
+    am_pm = None
+    for word, offset in [("上午", 0), ("早晨", 0), ("早上", 0),
+                         ("中午", 12), ("下午", 12), ("晚上", 12),
+                         ("夜里", 0), ("半夜", 0), ("凌晨", 0)]:
+        if word in text:
+            am_pm = offset
+            break
+
+    # extract hour and minute from normalized text
+    hour = None
+    minute = 0
+
+    # "3点半" / "三点半" — half-past must be checked first
+    tm = re.search(r'(\d{1,2})\s*[点:：时]?\s*半', normalized)
+    if tm:
+        hour = int(tm.group(1))
+        minute = 30
+    # "3点1刻" / "三点一刻" — quarter
+    elif re.search(r'[刻可]', normalized):
+        tm = re.search(r'(\d{1,2})\s*[点:：时]\s*(\d{1,2})\s*[刻可]', normalized)
+        if tm:
+            hour = int(tm.group(1))
+            minute = int(tm.group(2)) * 15
+        else:
+            tm = re.search(r'(\d{1,2})\s*[刻可]', normalized)
+            if tm:
+                hour = int(tm.group(1))
+                minute = 15
+    if hour is None:
+        # "3点15分", "3:15", "3：15", "3点15", "3时15"
+        tm = re.search(r'(\d{1,2})\s*[点:：时]\s*(\d{1,2})?\s*[分]?', normalized)
+        if tm:
+            hour = int(tm.group(1))
+            minute = int(tm.group(2)) if tm.group(2) else 0
+        else:
+            # "15:30" or "3:30" (pure digits colon)
+            tm = re.search(r'(\d{1,2}):(\d{2})', normalized)
+            if tm:
+                hour = int(tm.group(1))
+                minute = int(tm.group(2))
+            else:
+                # bare "3点" or "3时" with nothing after
+                tm = re.search(r'(\d{1,2})\s*[点:：时]', normalized)
+                if tm:
+                    hour = int(tm.group(1))
+                    minute = 0
+
+    if hour is None:
+        return (text, None)
+
+    # apply am/pm offset (or heuristic when not specified)
+    if am_pm is not None:
+        if hour == 12:
+            hour = 0 if am_pm == 0 else 12
+        elif hour <= 12:
+            hour = hour + am_pm
+    else:
+        # No am/pm specified → heuristic: 1-6 = PM, 7-12 = AM
+        if 1 <= hour <= 6:
+            hour = hour + 12
+
+    hour = hour % 24
+    minute = minute % 60
+
+    try:
+        due_dt = datetime(target_date.year, target_date.month, target_date.day,
+                          hour, minute)
+        due_iso = due_dt.isoformat()
+    except ValueError:
+        return (text, None)
+
+    # extract content: strip date/time words and connector verbs
+    content = text
+    content = re.sub(r'(今天|明天|后天)', '', content)
+    content = re.sub(r'(上午|下午|中午|晚上|早晨|早上)', '', content)
+    cn_num = r'[零一二两三四五六七八九十廿卅]'
+    content = re.sub(cn_num + r'+[点:：时]' + cn_num + r'*[分半刻可]?', '', content)
+    content = re.sub(r'\d{1,2}\s*[点:：时]\s*\d{0,2}\s*[分]?', '', content)
+    content = re.sub(r'\d{1,2}点半', '', content)
+    content = re.sub(r'\d{1,2}\s*[点:：时]\s*\d{0,2}\s*[刻可]', '', content)
+    content = re.sub(r'\d{1,2}:\d{2}', '', content)
+    content = re.sub(r'(提醒我|提醒|叫我|通知我|记住|记得|要|定个|设置|帮我|给我)', '', content)
+    content = re.sub(r'^我', '', content)
+    content = re.sub(r'\s+', '', content)
+
+    if not content:
+        return (text, due_iso)
+
+    return (content, due_iso)

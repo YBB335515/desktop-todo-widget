@@ -1,11 +1,11 @@
 import subprocess, sys, os, traceback
 
 log = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "_launcher.log"), "w", encoding="utf-8")
+                         "data", "_launcher.log"), "w", encoding="utf-8")
 
 try:
     widget = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "desktop_todo_widget.py")
+                          "main.py")
     log.write("widget path: %s\n" % widget)
     log.write("widget exists: %s\n" % os.path.exists(widget))
     log.write("python: %s\n" % sys.executable)

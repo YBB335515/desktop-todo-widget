@@ -8,6 +8,11 @@ dist/
 # Vosk model (too large, download separately)
 vosk-model-cn/
 
-# PyInstaller intermediate files (keep only the hand-written .spec)
+# PyInstaller intermediate files
 *.spec
-!desktop_todo_widget.spec
+!desktop-todo-widget/build/desktop_todo_widget.spec
+
+# Claude internal files
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
