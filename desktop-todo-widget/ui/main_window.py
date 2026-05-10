@@ -21,6 +21,7 @@ from ui.close_dialog import show_close_dialog
 from ui.edit_dialog import show_task_dialog
 from ui.reminder_popup import show_reminder_popup
 from ui.settings_dialog import show_settings_dialog
+from ui.tray_icon import TrayIcon
 from utils.common_utils import BASE_DIR, COLORS, DATA_DIR, FONT, FONT_HEADER, FONT_SMALL, \
     FONT_TITLE, FROZEN, format_due
 
@@ -51,7 +52,11 @@ class DesktopTodoWidget:
         self._notified_ids = set()
         self._due_labels = {}
         self._refresh_count = 0
-        self._tray_win = None
+        self._tray = TrayIcon(
+            self.root,
+            on_restore=self._restore_from_tray,
+            on_quit=self._quit_app,
+        )
 
         self._build_ui()
         self._refresh_task_list()
@@ -646,57 +651,16 @@ class DesktopTodoWidget:
 
     def _minimize_to_tray(self):
         self.root.withdraw()
-        self._show_tray_indicator()
-
-    def _show_tray_indicator(self):
-        if self._tray_win is not None:
-            return
-        tw = tk.Toplevel(self.root)
-        tw.title("")
-        tw.overrideredirect(True)
-        tw.wm_attributes("-topmost", True)
-        tw.configure(bg=COLORS["accent"])
-
-        sw = self.root.winfo_screenwidth()
-        sh = self.root.winfo_screenheight()
-        tw_w, tw_h = 48, 28
-        tw.geometry("%dx%d+%d+%d" % (tw_w, tw_h, sw - 60, sh - 80))
-
-        tw.configure(highlightbackground=COLORS["bg"],
-                     highlightcolor=COLORS["bg"],
-                     highlightthickness=1)
-
-        label = tk.Label(tw, text="待办", fg=COLORS["bg"], bg=COLORS["accent"],
-                         font=("Microsoft YaHei UI", 8, "bold"), cursor="hand2")
-        label.pack(fill=tk.BOTH, expand=True)
-        label.bind("<Button-1>", lambda e: self._restore_from_tray())
-        tw.bind("<Button-1>", lambda e: self._restore_from_tray())
-
-        def on_enter(e):
-            tw.configure(bg=COLORS["due"])
-            label.configure(bg=COLORS["due"])
-
-        def on_leave(e):
-            tw.configure(bg=COLORS["accent"])
-            label.configure(bg=COLORS["accent"])
-
-        label.bind("<Enter>", on_enter)
-        label.bind("<Leave>", on_leave)
-
-        self._tray_win = tw
+        self._tray.show()
 
     def _restore_from_tray(self):
-        if self._tray_win is not None:
-            self._tray_win.destroy()
-            self._tray_win = None
+        self._tray.hide()
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
 
     def _quit_app(self):
-        if self._tray_win is not None:
-            self._tray_win.destroy()
-            self._tray_win = None
+        self._tray.hide()
         self.root.destroy()
 
     def run(self):
