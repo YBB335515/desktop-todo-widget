@@ -851,6 +851,13 @@ class DesktopTodoWidget:
 
     def _restore_from_tray(self):
         self._tray.hide()
+        try:
+            import ctypes
+            hwnd = int(self.root.frame(), 16)
+            ctypes.windll.user32.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()

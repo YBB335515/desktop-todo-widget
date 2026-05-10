@@ -40,8 +40,9 @@ def _find_and_restore_window(title: str) -> bool:
         hwnd = ctypes.windll.user32.FindWindowW(None, title)
         if not hwnd:
             return False
-        # SW_SHOW = 5 (show window), handles both hidden and minimized states
-        ctypes.windll.user32.ShowWindow(hwnd, 5)
+        # SW_SHOWNORMAL = 1: activates and displays the window, restoring from
+        # minimized or hidden state to its original size and position.
+        ctypes.windll.user32.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
         ctypes.windll.user32.SetForegroundWindow(hwnd)
         return True
     except Exception:
