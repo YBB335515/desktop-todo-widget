@@ -6,8 +6,9 @@ Entry point: main.py (project root)
 import os
 import sys
 
-# Add project root to path so PyInstaller can resolve imports
-_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# SPECPATH is provided by PyInstaller — the directory containing this .spec file
+# spec is at <project>/build/, so dirname(SPECPATH) = project root
+_project_root = os.path.dirname(os.path.abspath(SPECPATH))
 
 # ---- Collect Vosk DLLs ----
 _vosk_dir = None
