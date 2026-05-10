@@ -66,6 +66,7 @@ a = Analysis(
         'wave',
         'core',
         'core.task_manager',
+        'core.single_instance',
         'core.reminder_service',
         'core.voice_recognizer',
         'core.natural_language',

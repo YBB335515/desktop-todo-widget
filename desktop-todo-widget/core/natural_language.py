@@ -63,6 +63,73 @@ def _cn_to_digits(text):
     return result
 
 
+def _normalize_time_expr(text):
+    """Expand combined time expressions so the parser can see them.
+
+    "今晚" -> "今天晚上", "明早" -> "明天早上", etc.
+    """
+    mapping = [
+        ("今晚", "今天晚上"),
+        ("今早", "今天早上"),
+        ("今晨", "今天早晨"),
+        ("今上午", "今天上午"),
+        ("今下午", "今天下午"),
+        ("今中午", "今天中午"),
+        ("明晚", "明天晚上"),
+        ("明早", "明天早上"),
+        ("明晨", "明天早晨"),
+        ("明上午", "明天上午"),
+        ("明下午", "明天下午"),
+        ("明中午", "明天中午"),
+        ("后晚", "后天晚上"),
+        ("后早", "后天早上"),
+        ("后晨", "后天早晨"),
+        ("后上午", "后天上午"),
+        ("后下午", "后天下午"),
+        ("后中午", "后天中午"),
+    ]
+    result = text
+    for short, full in mapping:
+        result = result.replace(short, full)
+    return result
+
+
+def _correct_misrecognition(text):
+    """Fix common speech-recognition errors before parsing.
+
+    Offline engines like Vosk often drop the second syllable in two-character
+    words, e.g. "提醒" -> "听".  We apply domain-specific corrections here.
+    """
+    corrections = [
+        # "提醒我" variants — keep longer patterns first
+        ("听醒我", "提醒我"),
+        ("挺醒我", "提醒我"),
+        ("体型我", "提醒我"),
+        ("体形我", "提醒我"),
+        ("提心我", "提醒我"),
+        ("听我", "提醒我"),
+        # "提醒" (without 我)
+        ("请听我", "请提醒我"),
+        # "叫我" variants
+        ("交我", "叫我"),
+        ("教我", "叫我"),
+        ("搅我", "叫我"),
+        # "通知我" variants
+        ("通吃我", "通知我"),
+        ("同志我", "通知我"),
+        # "记住" variants
+        ("寄住", "记住"),
+        # "记得" variants
+        ("积得", "记得"),
+        # "定个" variants
+        ("订个", "定个"),
+    ]
+    result = text
+    for wrong, right in corrections:
+        result = result.replace(wrong, right)
+    return result
+
+
 def parse_voice_task(text):
     """Extract task content and due time from voice input.
     e.g. "今天下午三点提醒我出去玩" -> ("出去玩", iso_string today 15:00)
@@ -70,6 +137,8 @@ def parse_voice_task(text):
     Returns (content, due_iso) or (original_text, None) if no time found.
     """
     text = text.strip()
+    text = _normalize_time_expr(text)
+    text = _correct_misrecognition(text)
     now = datetime.now()
 
     # normalize Chinese numbers to digits

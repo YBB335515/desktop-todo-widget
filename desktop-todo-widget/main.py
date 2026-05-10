@@ -5,10 +5,13 @@ import sys
 # Ensure project root is on path for absolute imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from core.single_instance import acquire_instance
 from ui.main_window import DesktopTodoWidget
 from utils.common_utils import BASE_DIR
 
 if __name__ == "__main__":
+    if not acquire_instance():
+        sys.exit(0)
     try:
         app = DesktopTodoWidget()
         app.run()

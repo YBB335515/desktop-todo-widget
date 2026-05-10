@@ -15,6 +15,7 @@ from core.reminder_service import (
     find_expired_notification_flags,
     find_imminent_tasks,
 )
+from core.single_instance import release_instance
 from core.task_manager import get_next_id, load_tasks, save_tasks
 from core.voice_recognizer import VoiceRecognizer, voice_log, VOICE_LOG_FILE
 from ui.close_dialog import show_close_dialog
@@ -661,6 +662,7 @@ class DesktopTodoWidget:
 
     def _quit_app(self):
         self._tray.hide()
+        release_instance()
         self.root.destroy()
 
     def run(self):
