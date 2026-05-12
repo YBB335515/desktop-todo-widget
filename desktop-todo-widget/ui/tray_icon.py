@@ -1,4 +1,4 @@
-"""System tray icon using pystray — minimize to notification area."""
+"""System tray icon using pystray — always present when app is running."""
 import threading
 import tkinter as tk
 from PIL import Image, ImageDraw
@@ -15,12 +15,10 @@ def _create_tray_image():
 
     margin = 3
     r = 6
-    # Rounded rect background (blue)
     draw.rounded_rectangle(
         [margin, margin, TRAY_ICON_SIZE - margin, TRAY_ICON_SIZE - margin],
         radius=r, fill="#89b4fa")
 
-    # Check mark
     cx, cy = TRAY_ICON_SIZE // 2, TRAY_ICON_SIZE // 2
     pts = [(cx - 7, cy), (cx - 2, cy + 6), (cx + 7, cy - 5)]
     draw.line(pts, fill="#1e1e2e", width=3, joint="curve")
@@ -31,29 +29,28 @@ def _create_tray_image():
 class TrayIcon:
     """Manages the system tray icon via pystray in a background thread."""
 
-    def __init__(self, root, on_restore, on_quit):
+    def __init__(self, root, on_toggle, on_quit):
         self._root = root
-        self._on_restore = on_restore
+        self._on_toggle = on_toggle
         self._on_quit = on_quit
         self._tray = None
         self._thread = None
-        self._menu_items = None
 
     def show(self):
-        """Create and show the tray icon."""
+        """Create and show the tray icon (called once at startup)."""
         import pystray
 
         if self._tray is not None:
             return
 
-        def do_restore(icon, item=None):
-            self._root.after(0, self._on_restore)
+        def do_toggle(icon, item=None):
+            self._root.after(0, self._on_toggle)
 
         def do_quit(icon, item=None):
             self._root.after(0, self._on_quit)
 
         menu = pystray.Menu(
-            pystray.MenuItem("显示窗口", do_restore, default=True),
+            pystray.MenuItem("显示/隐藏窗口", do_toggle, default=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("退出", do_quit),
         )
@@ -69,7 +66,7 @@ class TrayIcon:
         self._thread.start()
 
     def hide(self):
-        """Remove the tray icon."""
+        """Remove the tray icon (called only on app quit)."""
         if self._tray is not None:
             self._tray.stop()
             self._tray = None

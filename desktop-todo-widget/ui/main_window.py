@@ -56,7 +56,7 @@ class DesktopTodoWidget:
         self._refresh_count = 0
         self._tray = TrayIcon(
             self.root,
-            on_restore=self._restore_from_tray,
+            on_toggle=self._toggle_window,
             on_quit=self._quit_app,
         )
         self._tray.show()
@@ -848,20 +848,14 @@ class DesktopTodoWidget:
 
     def _minimize_to_tray(self):
         self.root.withdraw()
-        self._tray.show()
 
-    def _restore_from_tray(self):
-        self._tray.hide()
-        try:
-            import ctypes
-            hwnd = int(self.root.frame(), 16)
-            ctypes.windll.user32.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
+    def _toggle_window(self):
+        if self.root.state() == "withdrawn":
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        else:
+            self.root.withdraw()
 
     def _quit_app(self):
         self._tray.hide()
