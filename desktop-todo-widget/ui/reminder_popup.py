@@ -6,12 +6,10 @@ from utils.common_utils import COLORS, FONT_NOTIFY, FONT_NOTIFY_SMALL
 
 _SLIDE_STEPS = 10
 _SLIDE_INTERVAL = 20  # ms per step
-_FADE_STEPS = 6
-_FADE_INTERVAL = 25  # ms per step
 
 
 def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
-    """Show a notification popup for a due task. Auto-dismisses after 5 seconds."""
+    """Show a notification popup for a due task. Auto-dismisses after 10 seconds."""
 
     popup = tk.Toplevel(parent)
     popup.title("")
@@ -47,50 +45,48 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
              fg=COLORS["due"], bg=COLORS["notify_bg"],
              font=FONT_NOTIFY_SMALL).pack(anchor="w", pady=(2, 0))
 
-    # ---- state ----
-    _dismissing = False
-
-    # ---- dismiss with fade-out animation (no geometry jitter) ----
-    def _dismiss_now():
-        nonlocal _dismissing
-        if _dismissing:
-            return
-        _dismissing = True
-        _cancel_pending()
-        _fade_out()
-
-    def _fade_out(step=0):
-        if step > _FADE_STEPS:
-            try:
-                popup.destroy()
-            except tk.TclError:
-                pass
-            return
-        alpha = 1.0 - step / _FADE_STEPS
-        try:
-            popup.wm_attributes("-alpha", alpha)
-        except tk.TclError:
-            return
-        popup.after(_FADE_INTERVAL, lambda: _fade_out(step + 1))
-
-    # ---- cancel all pending timers ----
-    _slide_timers = []
+    # ---- timer tracking (all after() IDs so _cancel_all can clean up) ----
+    _slide_timers = []   # slide-up animation
+    _chain_timers = []   # dismiss chain
     _dismiss_timer = None
 
-    def _cancel_pending():
+    def _cancel_all():
         nonlocal _dismiss_timer
-        for t in _slide_timers:
+        for t in _slide_timers + _chain_timers:
             try:
                 popup.after_cancel(t)
             except Exception:
                 pass
         _slide_timers.clear()
+        _chain_timers.clear()
         if _dismiss_timer is not None:
             try:
                 popup.after_cancel(_dismiss_timer)
             except Exception:
                 pass
             _dismiss_timer = None
+
+    # ---- dismiss (no guard — every click retries; 3-step chain for event-loop) ----
+    def _dismiss_now():
+        _cancel_all()
+
+        # 3-step chain: each after() gives the event loop a chance to process,
+        # making destroy() reliable. First step sets alpha=0 for instant visual.
+        def _step(n):
+            if n <= 0:
+                try:
+                    popup.destroy()
+                except tk.TclError:
+                    pass
+                return
+            try:
+                popup.wm_attributes("-alpha", 0)
+            except tk.TclError:
+                pass
+            tid = popup.after(10, lambda: _step(n - 1))
+            _chain_timers.append(tid)
+
+        _step(3)
 
     # ---- snooze ----
     def _do_snooze(minutes):
@@ -103,8 +99,8 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
         _dismiss_now()
         return "break"
 
-    x_btn = tk.Label(header, text="×", fg=COLORS["text_secondary"],
-                     bg=COLORS["notify_bg"], font=("Microsoft YaHei UI", 14),
+    x_btn = tk.Label(header, text=" ✕ ", fg=COLORS["text_secondary"],
+                     bg=COLORS["notify_bg"], font=("Microsoft YaHei UI", 16, "bold"),
                      cursor="hand2")
     x_btn.pack(side=tk.RIGHT)
     x_btn.bind("<Button-1>", _on_x)
@@ -128,7 +124,7 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
 
     # ---- slide-up animation (open) ----
     def _schedule_slide_up(step=0):
-        if step > _SLIDE_STEPS or _dismissing:
+        if step > _SLIDE_STEPS:
             return
         y = int(start_y + (end_y - start_y) * step / _SLIDE_STEPS)
         popup.geometry("%dx%d+%d+%d" % (w, h, x, y))
@@ -137,4 +133,4 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
 
     popup.bind("<Button-1>", lambda e: _dismiss_now())
     _schedule_slide_up()
-    _dismiss_timer = popup.after(5000, _dismiss_now)
+    _dismiss_timer = popup.after(10000, _dismiss_now)

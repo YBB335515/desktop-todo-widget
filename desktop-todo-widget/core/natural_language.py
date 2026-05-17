@@ -171,6 +171,17 @@ def _correct_misrecognition(text):
         ("积得", "记得"),
         # "定个" variants
         ("订个", "定个"),
+        # "秒" variants — offline engines often mishear
+        ("几面", "几秒"),
+        ("面后", "秒后"),
+        ("面提醒", "秒提醒"),
+        ("面钟", "秒钟"),
+        # "免" → "秒" (another common misrecognition)
+        ("以免后", "5秒后"),
+        ("以免提醒", "5秒提醒"),
+        ("免后", "秒后"),
+        ("免提醒", "秒提醒"),
+        ("免钟", "秒钟"),
     ]
     result = text
     for wrong, right in corrections:
