@@ -94,6 +94,54 @@ def _normalize_time_expr(text):
     return result
 
 
+def _parse_relative_time(text):
+    """Parse relative time expressions like '5分钟后提醒我喝水', '10秒后休息'.
+    Returns (content, due_iso) or None if no relative time found."""
+    now = datetime.now()
+    normalized = _cn_to_digits(text)
+
+    connector = r'(?:提醒我|提醒|叫我|通知我|记住|记得|要|定个|设置|帮我|给我|请)'
+
+    time_units = [
+        (r'(\d+)\s*分(?:钟)?后', 'minutes'),
+        (r'(\d+)\s*秒(?:钟)?后', 'seconds'),
+        (r'(\d+)\s*小?时后', 'hours'),
+        (r'半(?:个)?小?时后', 'half_hour'),
+    ]
+
+    for pattern, unit in time_units:
+        m = re.search(pattern, normalized)
+        if not m:
+            continue
+
+        if unit == 'half_hour':
+            delta = timedelta(minutes=30)
+        elif unit == 'minutes':
+            delta = timedelta(minutes=int(m.group(1)))
+        elif unit == 'seconds':
+            delta = timedelta(seconds=int(m.group(1)))
+        elif unit == 'hours':
+            delta = timedelta(hours=int(m.group(1)))
+        else:
+            continue
+
+        due_iso = (now + delta).isoformat()
+
+        content = normalized
+        content = re.sub(r'\d+\s*分(?:钟)?后', '', content)
+        content = re.sub(r'\d+\s*秒(?:钟)?后', '', content)
+        content = re.sub(r'\d+\s*小?时后', '', content)
+        content = re.sub(r'半(?:个)?小?时后', '', content)
+        content = re.sub(connector, '', content)
+        content = re.sub(r'\s+', '', content)
+
+        if not content:
+            return (text, due_iso)
+        return (content, due_iso)
+
+    return None
+
+
 def _correct_misrecognition(text):
     """Fix common speech-recognition errors before parsing.
 
@@ -139,6 +187,11 @@ def parse_voice_task(text):
     text = text.strip()
     text = _normalize_time_expr(text)
     text = _correct_misrecognition(text)
+
+    rel = _parse_relative_time(text)
+    if rel:
+        return rel
+
     now = datetime.now()
 
     # normalize Chinese numbers to digits

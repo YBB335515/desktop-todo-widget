@@ -1,18 +1,26 @@
 """Notification popup that slides up from the bottom of the screen."""
 import tkinter as tk
+from datetime import timedelta
 
 from utils.common_utils import COLORS, FONT_NOTIFY, FONT_NOTIFY_SMALL
 
 
-def show_reminder_popup(parent, content, due_dt):
-    """Show a notification popup for a due task. Auto-dismisses after 8 seconds."""
+def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
+    """Show a notification popup for a due task. Auto-dismisses after 5 seconds."""
+
+    def _do_snooze(minutes):
+        new_due = due_dt + timedelta(minutes=minutes)
+        on_snooze(task_id, new_due.isoformat())
+        popup.destroy()
+
     popup = tk.Toplevel(parent)
     popup.title("")
     popup.configure(bg=COLORS["notify_bg"])
     popup.overrideredirect(True)
     popup.wm_attributes("-topmost", True)
 
-    w, h = 300, 80
+    btn_row_h = 28 if on_snooze else 0
+    w, h = 300, 80 + btn_row_h
     sw = parent.winfo_screenwidth()
     sh = parent.winfo_screenheight()
     x = sw - w - 20
@@ -35,6 +43,16 @@ def show_reminder_popup(parent, content, due_dt):
              fg=COLORS["due"], bg=COLORS["notify_bg"],
              font=FONT_NOTIFY_SMALL).pack(anchor="w", pady=(2, 0))
 
+    if on_snooze:
+        btn_frame = tk.Frame(inner, bg=COLORS["notify_bg"])
+        btn_frame.pack(fill=tk.X, pady=(8, 0))
+        for minutes, label in [(5, "延迟5分钟"), (10, "延迟10分钟"), (30, "延迟30分钟")]:
+            btn = tk.Label(btn_frame, text=label, fg=COLORS["accent"],
+                           bg=COLORS["notify_bg"], font=FONT_NOTIFY_SMALL,
+                           cursor="hand2")
+            btn.pack(side=tk.LEFT, padx=(0, 10))
+            btn.bind("<Button-1>", lambda e, m=minutes: _do_snooze(m))
+
     def slide_up(step=0, steps=10):
         if step > steps:
             return
@@ -46,6 +64,5 @@ def show_reminder_popup(parent, content, due_dt):
         popup.destroy()
 
     popup.bind("<Button-1>", lambda e: dismiss())
-    inner.bind("<Button-1>", lambda e: dismiss())
     slide_up()
-    popup.after(8000, dismiss)
+    popup.after(5000, dismiss)

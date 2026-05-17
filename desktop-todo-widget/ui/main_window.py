@@ -119,7 +119,18 @@ class DesktopTodoWidget:
 
     def _fire_notification(self, task_id, content, due_dt):
         self._notified_ids.add(task_id)
-        show_reminder_popup(self.root, content, due_dt)
+        show_reminder_popup(self.root, task_id, content, due_dt,
+                           on_snooze=self._snooze_task)
+
+    def _snooze_task(self, task_id, new_due_iso):
+        tasks = load_tasks()
+        for t in tasks:
+            if t["id"] == task_id:
+                t["due"] = new_due_iso
+                break
+        save_tasks(tasks)
+        self._notified_ids.discard(task_id)
+        self._refresh_task_list()
 
     # ==================== UI build ====================
 
