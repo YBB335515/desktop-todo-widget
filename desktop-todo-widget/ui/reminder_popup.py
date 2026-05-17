@@ -6,6 +6,8 @@ from utils.common_utils import COLORS, FONT_NOTIFY, FONT_NOTIFY_SMALL
 
 _SLIDE_STEPS = 10
 _SLIDE_INTERVAL = 20  # ms per step
+_FADE_STEPS = 6
+_FADE_INTERVAL = 25  # ms per step
 
 
 def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
@@ -46,33 +48,49 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
              font=FONT_NOTIFY_SMALL).pack(anchor="w", pady=(2, 0))
 
     # ---- state ----
-    _dismiss_timer = None
     _dismissing = False
 
-    # ---- dismiss with slide-down animation ----
+    # ---- dismiss with fade-out animation (no geometry jitter) ----
     def _dismiss_now():
-        nonlocal _dismiss_timer, _dismissing
+        nonlocal _dismissing
         if _dismissing:
             return
         _dismissing = True
-        if _dismiss_timer is not None:
-            popup.after_cancel(_dismiss_timer)
-            _dismiss_timer = None
-        _slide_down()
+        _cancel_pending()
+        _fade_out()
 
-    def _slide_down(step=0):
-        if step > _SLIDE_STEPS:
+    def _fade_out(step=0):
+        if step > _FADE_STEPS:
             try:
                 popup.destroy()
             except tk.TclError:
                 pass
             return
-        y = int(end_y + (start_y - end_y) * step / _SLIDE_STEPS)
+        alpha = 1.0 - step / _FADE_STEPS
         try:
-            popup.geometry("%dx%d+%d+%d" % (w, h, x, y))
+            popup.wm_attributes("-alpha", alpha)
         except tk.TclError:
             return
-        popup.after(_SLIDE_INTERVAL, lambda: _slide_down(step + 1))
+        popup.after(_FADE_INTERVAL, lambda: _fade_out(step + 1))
+
+    # ---- cancel all pending timers ----
+    _slide_timers = []
+    _dismiss_timer = None
+
+    def _cancel_pending():
+        nonlocal _dismiss_timer
+        for t in _slide_timers:
+            try:
+                popup.after_cancel(t)
+            except Exception:
+                pass
+        _slide_timers.clear()
+        if _dismiss_timer is not None:
+            try:
+                popup.after_cancel(_dismiss_timer)
+            except Exception:
+                pass
+            _dismiss_timer = None
 
     # ---- snooze ----
     def _do_snooze(minutes):
@@ -108,14 +126,15 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
             btn.pack(side=tk.LEFT, padx=(0, 10))
             btn.bind("<Button-1>", _make_snooze_handler(minutes))
 
-    # ---- slide-up animation ----
-    def slide_up(step=0):
-        if step > _SLIDE_STEPS:
+    # ---- slide-up animation (open) ----
+    def _schedule_slide_up(step=0):
+        if step > _SLIDE_STEPS or _dismissing:
             return
         y = int(start_y + (end_y - start_y) * step / _SLIDE_STEPS)
         popup.geometry("%dx%d+%d+%d" % (w, h, x, y))
-        popup.after(_SLIDE_INTERVAL, lambda: slide_up(step + 1))
+        tid = popup.after(_SLIDE_INTERVAL, lambda: _schedule_slide_up(step + 1))
+        _slide_timers.append(tid)
 
     popup.bind("<Button-1>", lambda e: _dismiss_now())
-    slide_up()
+    _schedule_slide_up()
     _dismiss_timer = popup.after(5000, _dismiss_now)
