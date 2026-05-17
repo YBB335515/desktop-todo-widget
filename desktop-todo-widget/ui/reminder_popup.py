@@ -4,6 +4,9 @@ from datetime import timedelta
 
 from utils.common_utils import COLORS, FONT_NOTIFY, FONT_NOTIFY_SMALL
 
+_SLIDE_STEPS = 10
+_SLIDE_INTERVAL = 20  # ms per step
+
 
 def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
     """Show a notification popup for a due task. Auto-dismisses after 5 seconds."""
@@ -30,7 +33,7 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
     inner = tk.Frame(popup, bg=COLORS["notify_bg"])
     inner.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
 
-    # header: content + × button
+    # header: content + x button
     header = tk.Frame(inner, bg=COLORS["notify_bg"])
     header.pack(fill=tk.X)
 
@@ -38,46 +41,64 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
              bg=COLORS["notify_bg"], font=FONT_NOTIFY, anchor="w",
              justify=tk.LEFT, wraplength=250).pack(side=tk.LEFT)
 
-    def _make_x_handler():
-        def handler(e):
-            _dismiss_now()
-            return "break"
-        return handler
-
-    x_btn = tk.Label(header, text="×", fg=COLORS["text_secondary"],
-                     bg=COLORS["notify_bg"], font=("Microsoft YaHei UI", 14),
-                     cursor="hand2")
-    x_btn.pack(side=tk.RIGHT)
-    x_btn.bind("<Button-1>", _make_x_handler())
-
     tk.Label(inner, text="到期时间: " + due_dt.strftime("%Y-%m-%d %H:%M"),
              fg=COLORS["due"], bg=COLORS["notify_bg"],
              font=FONT_NOTIFY_SMALL).pack(anchor="w", pady=(2, 0))
 
+    # ---- state ----
     _dismiss_timer = None
+    _dismissing = False
 
+    # ---- dismiss with slide-down animation ----
     def _dismiss_now():
-        nonlocal _dismiss_timer
+        nonlocal _dismiss_timer, _dismissing
+        if _dismissing:
+            return
+        _dismissing = True
         if _dismiss_timer is not None:
             popup.after_cancel(_dismiss_timer)
             _dismiss_timer = None
-        try:
-            popup.destroy()
-        except tk.TclError:
-            pass
+        _slide_down()
 
+    def _slide_down(step=0):
+        if step > _SLIDE_STEPS:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
+            return
+        y = int(end_y + (start_y - end_y) * step / _SLIDE_STEPS)
+        try:
+            popup.geometry("%dx%d+%d+%d" % (w, h, x, y))
+        except tk.TclError:
+            return
+        popup.after(_SLIDE_INTERVAL, lambda: _slide_down(step + 1))
+
+    # ---- snooze ----
     def _do_snooze(minutes):
         new_due = due_dt + timedelta(minutes=minutes)
         on_snooze(task_id, new_due.isoformat())
         _dismiss_now()
 
-    def _make_snooze_handler(minutes):
-        def handler(e):
-            _do_snooze(minutes)
-            return "break"
-        return handler
+    # ---- x button ----
+    def _on_x(e):
+        _dismiss_now()
+        return "break"
 
+    x_btn = tk.Label(header, text="×", fg=COLORS["text_secondary"],
+                     bg=COLORS["notify_bg"], font=("Microsoft YaHei UI", 14),
+                     cursor="hand2")
+    x_btn.pack(side=tk.RIGHT)
+    x_btn.bind("<Button-1>", _on_x)
+
+    # ---- snooze buttons ----
     if on_snooze:
+        def _make_snooze_handler(minutes):
+            def handler(e):
+                _do_snooze(minutes)
+                return "break"
+            return handler
+
         btn_frame = tk.Frame(inner, bg=COLORS["notify_bg"])
         btn_frame.pack(fill=tk.X, pady=(8, 0))
         for minutes, label in [(5, "延迟5分钟"), (10, "延迟10分钟"), (30, "延迟30分钟")]:
@@ -87,12 +108,13 @@ def show_reminder_popup(parent, task_id, content, due_dt, on_snooze=None):
             btn.pack(side=tk.LEFT, padx=(0, 10))
             btn.bind("<Button-1>", _make_snooze_handler(minutes))
 
-    def slide_up(step=0, steps=10):
-        if step > steps:
+    # ---- slide-up animation ----
+    def slide_up(step=0):
+        if step > _SLIDE_STEPS:
             return
-        y = int(start_y + (end_y - start_y) * step / steps)
+        y = int(start_y + (end_y - start_y) * step / _SLIDE_STEPS)
         popup.geometry("%dx%d+%d+%d" % (w, h, x, y))
-        popup.after(20, lambda: slide_up(step + 1, steps))
+        popup.after(_SLIDE_INTERVAL, lambda: slide_up(step + 1))
 
     popup.bind("<Button-1>", lambda e: _dismiss_now())
     slide_up()
