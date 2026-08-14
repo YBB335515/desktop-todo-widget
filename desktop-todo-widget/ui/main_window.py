@@ -59,6 +59,7 @@ class DesktopTodoWidget:
         self.collapsed_height = 32
         self._ctx_task_id = None
         self._notified_ids = set()
+        self._pending_exact = set()
         self._click_job = None
         self._due_labels = {}
         self._refresh_count = 0
@@ -327,10 +328,25 @@ class DesktopTodoWidget:
         tasks = load_all_tasks()
         imminent = find_imminent_tasks(tasks, self._notified_ids)
         for t, delay_ms in imminent:
+            if t["id"] in self._pending_exact:
+                continue  # 已排过一次，避免同一提醒弹多个窗
+            self._pending_exact.add(t["id"])
             self.root.after(delay_ms,
                            lambda tid=t["id"], content=t["content"],
                            due=datetime.fromisoformat(t["due"]):
-                           self._fire_notification(tid, content, due))
+                           self._fire_exact_notification(tid, content, due))
+
+    def _fire_exact_notification(self, task_id, content, due):
+        """Exact-time popup callback — dedupes against the periodic checker."""
+        self._pending_exact.discard(task_id)
+        if task_id in self._notified_ids:
+            return  # 周期检查已经弹过了
+        result = find_task(task_id)
+        if result:
+            _, _, t = result
+            if t.get("done") or not t.get("due"):
+                return  # 任务已完成或提醒已清除
+        self._fire_notification(task_id, content, due)
 
     # ==================== notification ====================
 
@@ -1312,9 +1328,10 @@ class DesktopTodoWidget:
             text_fg = COLORS["text_secondary"] if t["done"] else COLORS["text"]
             text_font = ("Microsoft YaHei UI", 10, "overstrike") if t["done"] else ("Microsoft YaHei UI", 10)
 
-            # Red highlight: only recurring tasks (每周/每两周/每月/每年) at the
-            # moment they become due — within the 60s notification window.
-            # Long-overdue tasks stay normal; the [已过期] badge handles them.
+            # Red highlight: recurring tasks (每周/每两周/每月/每年) stay red
+            # from the moment they become due until the user completes the
+            # cycle (which reschedules it to the next occurrence). One-off
+            # tasks never turn red — they only get the popup.
             is_due_recurring = False
             rec = t.get("recurring", "")
             if rec and not t.get("done") and should_reset_recurring_after_notify(t):
@@ -1322,8 +1339,7 @@ class DesktopTodoWidget:
                 if due_str:
                     try:
                         due_dt = datetime.fromisoformat(due_str)
-                        delta = (datetime.now() - due_dt).total_seconds()
-                        if 0 <= delta < 60:
+                        if due_dt <= datetime.now():
                             is_due_recurring = True
                     except Exception:
                         pass
