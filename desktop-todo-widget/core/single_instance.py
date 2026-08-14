@@ -17,7 +17,13 @@ LOCK_FILE = os.path.join(_LOCK_DIR, "_app.lock")
 
 
 def _pid_is_running(pid: int) -> bool:
-    """Check if a process with the given PID is still running (Windows)."""
+    """Check if a process with the given PID is still running AND is our app.
+
+    Verifies both the exit code (STILL_ACTIVE) and the executable path
+    (must be python/pythonw or this app's own exe). This guards against
+    PID reuse — e.g. a stale lock PID later reassigned to QQ's
+    crashpad_handler.exe would otherwise block app startup forever.
+    """
     try:
         import ctypes.wintypes
         SYNCHRONIZE = 0x00100000
@@ -26,10 +32,23 @@ def _pid_is_running(pid: int) -> bool:
             PROCESS_QUERY_LIMITED_INFO | SYNCHRONIZE, False, pid)
         if not handle:
             return False
-        exit_code = ctypes.wintypes.DWORD()
-        ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return exit_code.value == 259  # STILL_ACTIVE
+        try:
+            exit_code = ctypes.wintypes.DWORD()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            if exit_code.value != 259:  # STILL_ACTIVE
+                return False
+            # Verify the exe actually belongs to this app (python/pythonw/exe)
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.wintypes.DWORD(1024)
+            if ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buf, ctypes.byref(size)):
+                exe = buf.value.lower()
+                if any(k in exe for k in ("python", "desktoptodowidget",
+                                          "todo_widget", "todo-widget")):
+                    return True
+            return False
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
     except Exception:
         return False
 

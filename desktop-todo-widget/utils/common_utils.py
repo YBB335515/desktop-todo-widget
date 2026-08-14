@@ -13,20 +13,41 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 VOICE_LOG_FILE = os.path.join(DATA_DIR, "_voice_error.log")
 
 COLORS = {
-    "bg": "#1e1e2e",
-    "surface": "#2a2a3c",
-    "text": "#cdd6f4",
-    "text_secondary": "#6c7086",
-    "accent": "#89b4fa",
-    "done": "#a6e3a1",
-    "danger": "#f38ba8",
-    "due": "#fab387",
-    "overdue": "#f38ba8",
-    "input_bg": "#313244",
-    "scrollbar": "#45475a",
-    "title_bar": "#1a1a2a",
-    "notify_bg": "#1e1e2e",
-    "notify_border": "#89b4fa",
+    "bg": "#0f1a2e",
+    "surface": "#152238",
+    "card": "#1a2840",
+    "card_border": "#253550",
+    "text": "#e0e6f0",
+    "text_secondary": "#8090b0",
+    "accent": "#4da6ff",
+    "accent_light": "#80c4ff",
+    "done": "#4dc9a0",
+    "danger": "#ff6b6b",
+    "due": "#f0b860",
+    "overdue": "#ff6b6b",
+    "input_bg": "#0d1a2e",
+    "input_border": "#253550",
+    "scrollbar": "#203550",
+    "scrollbar_hover": "#304560",
+    "title_bar": "#0a1428",
+    "notify_bg": "#0f1a2e",
+    "notify_border": "#4da6ff",
+    "hover": "#203050",
+}
+
+# Unicode icons — no image files needed, works everywhere
+ICONS = {
+    "checkbox_undone": "○",
+    "checkbox_done": "◉",
+    "delete": "✕",
+    "edit": "✎",
+    "due": "◷",
+    "mic": "🎤",
+    "mic_recording": "⏹",
+    "add": "＋",
+    "collapse": "─",
+    "expand": "☰",
+    "settings": "⚙",
 }
 
 FONT = ("Microsoft YaHei UI", 10)

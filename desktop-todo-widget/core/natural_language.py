@@ -1,11 +1,211 @@
 """Natural language time parsing for task input."""
 import re
+from calendar import monthrange
 from datetime import datetime, timedelta
 
 
+def _add_months(source_dt, months):
+    """Add N months to a date, clamping to month end if needed."""
+    total_months = source_dt.month - 1 + months
+    year = source_dt.year + total_months // 12
+    month = total_months % 12 + 1
+    max_day = monthrange(year, month)[1]
+    day = min(source_dt.day, max_day)
+    return source_dt.replace(year=year, month=month, day=day)
+
+
+def _add_years(source_dt, years):
+    """Add N years to a date, clamping to Feb 28/29 if needed."""
+    year = source_dt.year + years
+    try:
+        return source_dt.replace(year=year)
+    except ValueError:
+        # Feb 29 on non-leap year
+        return source_dt.replace(year=year, day=28)
+
+
+def _parse_next_month_day(text, now):
+    """Parse '下个月1号 9:00' or '下个月五号' etc. Returns (due_iso, remaining_text) or None."""
+    norm = _cn_to_digits(text)
+    # Match "下个月[NN]号/日 [HH:MM]"
+    m = re.match(r'下个月\s*(\d{1,2})\s*[号日]\s*(?:(\d{1,2})[:\uff1a](\d{2}))?', norm)
+    if m:
+        day = int(m.group(1))
+        nm = _add_months(now, 1)
+        max_day = monthrange(nm.year, nm.month)[1]
+        day = min(day, max_day)
+        hour = int(m.group(2)) if m.group(2) else 9
+        minute = int(m.group(3)) if m.group(3) else 0
+        due_dt = nm.replace(day=day, hour=hour % 24, minute=minute % 60, second=0, microsecond=0)
+        remaining = re.sub(r'下个月\s*\d+\s*[号日]\s*(?:\d+[:\uff1a]\d+)?', '', norm).strip()
+        return due_dt.isoformat(), remaining
+    return None
+
+
+def _parse_next_year_date(text, now):
+    """Parse '明年3月15号 10:00' or '明年三月十五' etc. Returns (due_iso, remaining_text) or None."""
+    norm = _cn_to_digits(text)
+    # Match "明年[NN]月[NN]号/日 [HH:MM]"
+    m = re.match(r'明年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]\s*(?:(\d{1,2})[:\uff1a](\d{2}))?', norm)
+    if not m:
+        # Try "明年[NN]月" only (no day specified → day=1)
+        m = re.match(r'明年\s*(\d{1,2})\s*月(?:\s*(\d{1,2})[:\uff1a](\d{2}))?', norm)
+        if m:
+            day = 1
+            month = int(m.group(1))
+            hour = int(m.group(2)) if m.group(2) else 9
+            minute = int(m.group(3)) if m.group(3) else 0
+        else:
+            return None
+    else:
+        month = int(m.group(1))
+        day = min(int(m.group(2)), monthrange(now.year + 1, month)[1])
+        hour = int(m.group(3)) if m.group(3) else 9
+        minute = int(m.group(4)) if m.group(4) else 0
+
+    ny = now.year + 1
+    max_day = monthrange(ny, month)[1]
+    day = min(day, max_day)
+    try:
+        due_dt = datetime(ny, month, day, hour % 24, minute % 60, 0)
+    except ValueError:
+        return None
+    # Build remaining text for cleaning
+    if m.lastindex and m.lastindex >= 2:
+        remaining = re.sub(r'明年\s*\d+\s*月\s*\d*\s*[号日]?\s*(?:\d+[:\uff1a]\d+)?', '', norm).strip()
+    else:
+        remaining = re.sub(r'明年\s*\d+\s*月\s*(?:\d+[:\uff1a]\d+)?', '', norm).strip()
+    return due_dt.isoformat(), remaining
+
+
+def _parse_relative_months_years(text, now):
+    """Parse 'X个月后', 'X年后'. Returns (content, due_iso) or None."""
+    norm = _cn_to_digits(text)
+    connector = r'(?:提醒我|提醒|叫我|通知我|记住|记得|要|定个|设置|帮我|给我|请)'
+
+    patterns = [
+        (r'(\d+)\s*个?月后', 'months'),
+        (r'(\d+)\s*年后', 'years'),
+    ]
+    for pattern, unit in patterns:
+        m = re.search(pattern, norm)
+        if not m:
+            continue
+        count = int(m.group(1))
+        if unit == 'months':
+            due_dt = _add_months(now, count)
+        elif unit == 'years':
+            due_dt = _add_years(now, count)
+        else:
+            continue
+
+        due_iso = due_dt.isoformat()
+        content = norm
+        content = re.sub(r'\d+\s*个?月后', '', content)
+        content = re.sub(r'\d+\s*年后', '', content)
+        content = re.sub(connector, '', content)
+        content = re.sub(r'\s+', '', content)
+
+        if not content:
+            return (text, due_iso)
+        return (content, due_iso)
+    return None
+
+
+_WEEKDAY_PY = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "7": 6,
+               "日": 6, "天": 6}
+
+
+def _weekday_to_py(ch):
+    """Weekday char ('1'..'7' / '日' / '天') → python weekday 0..6 (Mon=0)."""
+    return _WEEKDAY_PY.get(ch, 0)
+
+
+def _next_weekday_occurrence(now, weekday):
+    """Next date whose weekday() == weekday, 1-7 days ahead."""
+    delta = (weekday - now.weekday()) % 7
+    if delta == 0:
+        delta = 7
+    return now + timedelta(days=delta)
+
+
+def _parse_weekly_as_due(text, now):
+    """Parse '每周五 9:00' / '每星期3 15:00' → next-weekday due ISO or None."""
+    norm = _cn_to_digits(text)
+    m = re.match(r'每(?:周|星期|礼拜)\s*([1-7](?![\uff1a:\d])|日|天)\s*(?:(\d{1,2})[:\uff1a](\d{2}))?', norm)
+    if not m:
+        return None
+    weekday = _weekday_to_py(m.group(1))
+    hour = int(m.group(2)) if m.group(2) else 9
+    minute = int(m.group(3)) if m.group(3) else 0
+    due_dt = _next_weekday_occurrence(now, weekday)
+    due_dt = due_dt.replace(hour=hour % 24, minute=minute % 60, second=0, microsecond=0)
+    return due_dt.isoformat()
+
+
+def _parse_biweekly_as_due(text, now):
+    """Parse '每两周 9:00' / '每隔一周五 15:00' → due ISO or None."""
+    norm = _cn_to_digits(text)
+    m = re.match(r'(?:每2周|每隔1周|隔1周)\s*(?:([1-7](?![\uff1a:\d])|日|天)\s*)?(?:(\d{1,2})[:\uff1a](\d{2}))?', norm)
+    if not m:
+        return None
+    weekday = _weekday_to_py(m.group(1)) if m.group(1) else now.weekday()
+    hour = int(m.group(2)) if m.group(2) else 9
+    minute = int(m.group(3)) if m.group(3) else 0
+    due_dt = _next_weekday_occurrence(now, weekday)
+    due_dt = due_dt.replace(hour=hour % 24, minute=minute % 60, second=0, microsecond=0)
+    return due_dt.isoformat()
+
+
 def parse_due_time(text):
+    """Parse various date/time formats into ISO datetime string.
+
+    Supported formats:
+      - 今天/明天/后天 HH:MM
+      - 下个月NN号 HH:MM
+      - 明年NN月NN号 HH:MM
+      - 每月NN号 HH:MM  (sets due to next month NNth)
+      - 每年M月D号 HH:MM  (sets due to this/next year M月D日)
+      - 每周X HH:MM    (X = 一~日/1-7, sets due to next weekday)
+      - 每两周X HH:MM  (X optional, sets due to next occurrence)
+      - YYYY-MM-DD HH:MM
+      - HH:MM  (assumes today)
+    """
     now = datetime.now()
     text = text.strip()
+
+    # "每月NN号" → like "下个月NN号" 
+    result = _parse_recurring_as_due(text, now)
+    if result:
+        return result
+
+    # "每年M月D号" → like "明年M月D号"
+    result = _parse_yearly_as_due(text, now)
+    if result:
+        return result
+
+    # "每周五 9:00" → next Friday
+    result = _parse_weekly_as_due(text, now)
+    if result:
+        return result
+
+    # "每两周 9:00" → next occurrence
+    result = _parse_biweekly_as_due(text, now)
+    if result:
+        return result
+
+    # ---- try month/year expressions first ----
+    # "下个月1号 9:00"
+    result = _parse_next_month_day(text, now)
+    if result:
+        return result[0]
+
+    # "明年3月15号 10:00"
+    result = _parse_next_year_date(text, now)
+    if result:
+        return result[0]
+
+    # original logic: 今天/明天/后天
     if text.startswith("明天"):
         time_str = text[2:].strip()
         target_date = now.date() + timedelta(days=1)
@@ -31,6 +231,99 @@ def parse_due_time(text):
     target_dt = datetime(target_date.year, target_date.month, target_date.day,
                          hour, minute)
     return target_dt.isoformat()
+
+
+def _parse_recurring_as_due(text, now):
+    """Parse '每月10号 9:00' → next month 10th at 9:00.
+    Returns ISO string or None."""
+    norm = _cn_to_digits(text)
+    m = re.match(r'每月\s*(\d{1,2})\s*[号日]\s*(?:(\d{1,2})[:\uff1a](\d{2}))?', norm)
+    if not m:
+        return None
+    day = int(m.group(1))
+    if day < 1 or day > 31:
+        return None
+    nm = _add_months(now, 1)
+    max_day = monthrange(nm.year, nm.month)[1]
+    day = min(day, max_day)
+    hour = int(m.group(2)) if m.group(2) else 9
+    minute = int(m.group(3)) if m.group(3) else 0
+    due_dt = nm.replace(day=day, hour=hour % 24, minute=minute % 60, second=0, microsecond=0)
+    return due_dt.isoformat()
+
+
+def _parse_yearly_as_due(text, now):
+    """Parse '每年3月15号 10:00' → this/next year March 15th at 10:00.
+    Returns ISO string or None."""
+    norm = _cn_to_digits(text)
+    m = re.match(r'每年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]\s*(?:(\d{1,2})[:\uff1a](\d{2}))?', norm)
+    if not m:
+        return None
+    month = int(m.group(1))
+    day = int(m.group(2))
+    if month < 1 or month > 12 or day < 1 or day > 31:
+        return None
+    hour = int(m.group(3)) if m.group(3) else 9
+    minute = int(m.group(4)) if m.group(4) else 0
+    # Use this year if date hasn't passed, otherwise next year
+    max_day = monthrange(now.year, month)[1]
+    day = min(day, max_day)
+    try:
+        candidate = datetime(now.year, month, day, hour % 24, minute % 60)
+        if candidate < now:
+            candidate = datetime(now.year + 1, month, day, hour % 24, minute % 60)
+        return candidate.isoformat()
+    except ValueError:
+        return None
+
+
+def parse_recurring_from_text(text):
+    """Parse natural language recurring text.
+    '每月10号' → 'monthly:10'
+    '每年3月15号' → 'yearly:3-15'
+    '每周五' → 'weekly:4'
+    '每两周五' → 'biweekly:4'
+    Returns (recurring_spec, remaining_text) or (None, original_text).
+    """
+    norm = _cn_to_digits(text)
+    now = datetime.now()
+
+    # "每周X" / "每星期X" / "每礼拜X" (X = 1-7 / 日 / 天)
+    m = re.search(r'每(?:周|星期|礼拜)\s*([1-7](?![\uff1a:\d])|日|天)', norm)
+    if m:
+        weekday = _weekday_to_py(m.group(1))
+        remaining = re.sub(r'每(?:周|星期|礼拜)\s*([1-7](?![\uff1a:\d])|日|天)', '', norm).strip()
+        remaining = re.sub(r'\d+[:\uff1a]\d+', '', remaining).strip()
+        return f"weekly:{weekday}", remaining
+
+    # "每两周X" / "每2周X" / "每隔一周X" / "隔一周X"
+    m = re.search(r'(?:每2周|每隔1周|隔1周)\s*(?:([1-7](?![\uff1a:\d])|日|天))?', norm)
+    if m:
+        weekday = _weekday_to_py(m.group(1)) if m.group(1) else now.weekday()
+        remaining = re.sub(r'(?:每2周|每隔1周|隔1周)\s*([1-7](?![\uff1a:\d])|日|天)?', '', norm).strip()
+        remaining = re.sub(r'\d+[:\uff1a]\d+', '', remaining).strip()
+        return f"biweekly:{weekday}", remaining
+
+    # "每月NN号" or "每月NN日"
+    m = re.search(r'每月\s*(\d{1,2})\s*[号日]', norm)
+    if m:
+        day = int(m.group(1))
+        if 1 <= day <= 31:
+            remaining = re.sub(r'每月\s*\d+\s*[号日]', '', norm).strip()
+            remaining = re.sub(r'\d+[:\uff1a]\d+', '', remaining).strip()
+            return f"monthly:{day}", remaining
+
+    # "每年M月D号" or "每年M月D日"
+    m = re.search(r'每年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]', norm)
+    if m:
+        month = int(m.group(1))
+        day = int(m.group(2))
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            remaining = re.sub(r'每年\s*\d+\s*月\s*\d+\s*[号日]', '', norm).strip()
+            remaining = re.sub(r'\d+[:\uff1a]\d+', '', remaining).strip()
+            return f"yearly:{month}-{day}", remaining
+
+    return None, text
 
 
 def _cn_to_digits(text):
@@ -99,6 +392,11 @@ def _parse_relative_time(text):
     Returns (content, due_iso) or None if no relative time found."""
     now = datetime.now()
     normalized = _cn_to_digits(text)
+
+    # First try month/year relative time
+    rel_my = _parse_relative_months_years(text, now)
+    if rel_my:
+        return rel_my
 
     connector = r'(?:提醒我|提醒|叫我|通知我|记住|记得|要|定个|设置|帮我|给我|请)'
 
@@ -189,10 +487,50 @@ def _correct_misrecognition(text):
     return result
 
 
+def _parse_voice_date(text, now):
+    """Try to parse month/year date from voice text.
+    Returns (due_dt, remaining_text) or None."""
+    normalized = _cn_to_digits(text)
+
+    # "下个月NN号 [HH:MM]"
+    m = re.search(r'下个月\s*(\d{1,2})\s*[号日]', normalized)
+    if m:
+        day = int(m.group(1))
+        nm = _add_months(now, 1)
+        max_day = monthrange(nm.year, nm.month)[1]
+        day = min(day, max_day)
+        due_dt = nm.replace(day=day)
+        remaining = re.sub(r'下个月\s*\d+\s*[号日]', '', normalized).strip()
+        return due_dt, remaining
+
+    # "明年NN月NN号/日"
+    m = re.search(r'明年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]', normalized)
+    if m:
+        month = int(m.group(1))
+        day = int(m.group(2))
+        max_day = monthrange(now.year + 1, month)[1]
+        day = min(day, max_day)
+        due_dt = datetime(now.year + 1, month, day)
+        remaining = re.sub(r'明年\s*\d+\s*月\s*\d+\s*[号日]', '', normalized).strip()
+        return due_dt, remaining
+
+    # "明年NN月" (day defaults to 1)
+    m = re.search(r'明年\s*(\d{1,2})\s*月', normalized)
+    if m:
+        month = int(m.group(1))
+        due_dt = datetime(now.year + 1, month, 1)
+        remaining = re.sub(r'明年\s*\d+\s*月', '', normalized).strip()
+        return due_dt, remaining
+
+    return None
+
+
 def parse_voice_task(text):
     """Extract task content and due time from voice input.
     e.g. "今天下午三点提醒我出去玩" -> ("出去玩", iso_string today 15:00)
     e.g. "明天上午十点开会"       -> ("开会", iso_string tomorrow 10:00)
+    e.g. "下个月1号提醒我交房租" -> ("交房租", iso_string next month 1st)
+    e.g. "3个月后提醒我复查"     -> ("复查", iso_string 3 months later)
     Returns (content, due_iso) or (original_text, None) if no time found.
     """
     text = text.strip()
@@ -208,13 +546,21 @@ def parse_voice_task(text):
     # normalize Chinese numbers to digits
     normalized = _cn_to_digits(text)
 
+    # Try month/year date first
+    date_result = _parse_voice_date(text, now)
+    if date_result:
+        target_date, remaining_text = date_result
+    else:
+        target_date = None
+
     # figure out target date
     date_offset = 0
     for pattern, offset in [("今天", 0), ("明天", 1), ("后天", 2)]:
         if pattern in text:
             date_offset = offset
             break
-    target_date = now.date() + timedelta(days=date_offset)
+    if target_date is None:
+        target_date = now.date() + timedelta(days=date_offset)
 
     # figure out am/pm
     am_pm = None
@@ -264,33 +610,41 @@ def parse_voice_task(text):
                     hour = int(tm.group(1))
                     minute = 0
 
-    if hour is None:
+    has_date_word = any(w in text for w in ("今天", "明天", "后天"))
+    if hour is None and date_result is None and not has_date_word:
         return (text, None)
 
     # apply am/pm offset (or heuristic when not specified)
     if am_pm is not None:
         if hour == 12:
             hour = 0 if am_pm == 0 else 12
-        elif hour <= 12:
+        elif hour is not None and hour <= 12:
             hour = hour + am_pm
-    else:
+    elif hour is not None:
         # No am/pm specified → heuristic: 1-6 = PM, 7-12 = AM
         if 1 <= hour <= 6:
             hour = hour + 12
 
-    hour = hour % 24
+    hour = 0 if hour is None else (hour % 24)
     minute = minute % 60
 
-    try:
-        due_dt = datetime(target_date.year, target_date.month, target_date.day,
-                          hour, minute)
-        due_iso = due_dt.isoformat()
-    except ValueError:
-        return (text, None)
+    if isinstance(target_date, datetime):
+        # It's already a datetime object from _parse_voice_date
+        due_dt = target_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    else:
+        try:
+            due_dt = datetime(target_date.year, target_date.month, target_date.day,
+                              hour, minute)
+        except ValueError:
+            return (text, None)
+
+    due_iso = due_dt.isoformat()
 
     # extract content: strip date/time words and connector verbs
     content = text
     content = re.sub(r'(今天|明天|后天)', '', content)
+    content = re.sub(r'(下个月\s*\d+\s*[号日])', '', content)
+    content = re.sub(r'(明年\s*\d+\s*月\s*\d+\s*[号日]?)', '', content)
     content = re.sub(r'(上午|下午|中午|晚上|早晨|早上)', '', content)
     cn_num = r'[零一二两三四五六七八九十廿卅]'
     content = re.sub(cn_num + r'+[点:：时]' + cn_num + r'*[分半刻可]?', '', content)
@@ -306,3 +660,47 @@ def parse_voice_task(text):
         return (text, due_iso)
 
     return (content, due_iso)
+
+
+def _strip_connectors(text):
+    """Remove task connector verbs (提醒我/叫我/…) from text."""
+    content = re.sub(r'(提醒我|提醒|叫我|通知我|记住|记得|要|定个|设置|帮我|给我|请)', '', text)
+    content = re.sub(r'\s+', '', content)
+    return content
+
+
+def parse_task_input(text):
+    """Full pipeline for quick-add / voice input.
+
+    Handles recurring phrases ('每周五' / '每两周'), time expressions and
+    connector verbs in one pass.
+
+    Returns (content, due_iso, recurring_spec).
+    """
+    text = text.strip()
+    spec, remaining = parse_recurring_from_text(text)
+    if spec:
+        due_iso = None
+        content = None
+        try:
+            parsed_content, parsed_due = parse_voice_task(remaining)
+            if parsed_due:
+                due_iso = parsed_due
+                content = parsed_content
+        except Exception:
+            pass
+        if not due_iso:
+            try:
+                due_iso = parse_due_time(text)
+            except ValueError:
+                due_iso = None
+        if not content:
+            content = _strip_connectors(remaining)
+        if not content:
+            content = text
+        return content, due_iso, spec
+    try:
+        content, due_iso = parse_voice_task(text)
+    except Exception:
+        content, due_iso = text, None
+    return content, due_iso, None

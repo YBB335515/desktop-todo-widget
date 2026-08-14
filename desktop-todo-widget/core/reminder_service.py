@@ -53,3 +53,16 @@ def find_imminent_tasks(tasks, notified_ids, window_ms=3000):
         if 0 < delta_ms < window_ms:
             result.append((t, int(delta_ms)))
     return result
+
+
+def should_reset_recurring_after_notify(task):
+    """Check if a recurring task should be rescheduled after notification.
+    Returns True if the task has any recurring spec."""
+    rec = task.get("recurring", "")
+    return bool(rec) and (
+        rec.startswith("monthly:")
+        or rec.startswith("yearly:")
+        or rec.startswith("weekly:")
+        or rec.startswith("biweekly:")
+        or rec == "monthly_day1"
+    )

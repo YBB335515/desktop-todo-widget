@@ -9,6 +9,18 @@ SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 DEFAULT_SETTINGS = {
     "autostart": False,
     "close_action": "",
+    # Weather
+    "weather_cities": ["宿州", "合肥"],
+    "weather_names": {"宿州": "宿州", "合肥": "合肥"},
+    "weather_enabled": True,
+    "weather_home_city": "合肥",
+    "weather_last_city": "宿州",
+    "weather_manual_city": "",
+    "weather_swap_order": False,
+    # AI weather alert API config (stored here to keep source code clean)
+    "weather_api_key": "",
+    "weather_api_base_url": "https://api.deepseek.com/anthropic",
+    "weather_api_max_tokens": 500,
 }
 
 

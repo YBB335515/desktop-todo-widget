@@ -10,6 +10,136 @@ from utils.update_checker import VERSION, check_for_updates, download_update, \
     apply_update_and_restart, open_releases_page
 
 
+def _build_weather_section(dlg_frame, settings):
+    """Add weather config rows to the settings frame.
+    Uses dynamic city ordering: home_city fixed, second city auto-detected.
+    """
+    from core.weather_checker import fetch_temps
+
+    home_default = settings.get("weather_home_city", "合肥")
+    home_var = tk.StringVar(value=home_default)
+
+    row1 = tk.Frame(dlg_frame, bg=COLORS["surface"])
+    row1.pack(fill=tk.X, padx=16, pady=(4, 2))
+    tk.Label(row1, text="家城市", fg=COLORS["text"],
+             bg=COLORS["surface"], font=FONT).pack(side=tk.LEFT)
+    tk.Entry(row1, textvariable=home_var, bg=COLORS["input_bg"],
+             fg=COLORS["text"], font=FONT, relief="flat", bd=3, width=18).pack(side=tk.RIGHT)
+
+    # Second city — manual input wins over auto detection
+    manual_default = settings.get("weather_manual_city", "")
+    manual_var = tk.StringVar(value=manual_default)
+    row2 = tk.Frame(dlg_frame, bg=COLORS["surface"])
+    row2.pack(fill=tk.X, padx=16, pady=(2, 2))
+    tk.Label(row2, text="第二城市", fg=COLORS["text"],
+             bg=COLORS["surface"], font=FONT).pack(side=tk.LEFT)
+    tk.Entry(row2, textvariable=manual_var, bg=COLORS["input_bg"],
+             fg=COLORS["text"], font=FONT, relief="flat", bd=3, width=18).pack(side=tk.RIGHT)
+    tk.Label(row2, text="(留空则自动检测)", fg=COLORS["text_secondary"],
+             bg=COLORS["surface"], font=FONT_SMALL).pack(side=tk.RIGHT, padx=(4, 0))
+
+    # API Key field
+    api_key_var = tk.StringVar(value=settings.get("weather_api_key", ""))
+    row_api = tk.Frame(dlg_frame, bg=COLORS["surface"])
+    row_api.pack(fill=tk.X, padx=16, pady=(2, 2))
+    tk.Label(row_api, text="API Key", fg=COLORS["text"],
+             bg=COLORS["surface"], font=FONT).pack(side=tk.LEFT)
+    tk.Entry(row_api, textvariable=api_key_var, bg=COLORS["input_bg"],
+             fg=COLORS["text"], font=FONT, relief="flat", bd=3, width=18, show="*").pack(side=tk.RIGHT)
+
+    has_bad = tk.BooleanVar(value=False)
+
+    # Preview + refresh
+    row3 = tk.Frame(dlg_frame, bg=COLORS["surface"])
+    row3.pack(fill=tk.X, padx=16, pady=(4, 2))
+
+    preview_lbl = tk.Label(row3, text="点击刷新预览", fg=COLORS["text_secondary"],
+                           bg=COLORS["surface"], font=FONT_SMALL)
+    preview_lbl.pack(side=tk.LEFT)
+
+    refresh_btn = tk.Label(row3, text="刷新", fg=COLORS["accent"],
+                           bg=COLORS["surface"], font=FONT_SMALL, cursor="hand2", padx=6)
+    refresh_btn.pack(side=tk.RIGHT)
+
+    def _refresh_preview():
+        preview_lbl.configure(text="刷新中...")
+        dlg = dlg_frame.winfo_toplevel()
+
+        def _fetch():
+            try:
+                c1 = home_var.get().strip()
+                cities = [c1] if c1 else []
+                if not cities:
+                    dlg.after(0, lambda: preview_lbl.configure(text="请填写家城市名"))
+                    return
+                manual_city = manual_var.get().strip()
+                temps = fetch_temps({"weather_home_city": c1,
+                                    "weather_manual_city": manual_city,
+                                    "weather_enabled": True})
+                parts = []
+                _bad = False
+                for r in temps:
+                    if r["temp"] == "?":
+                        _bad = True
+                        parts.append(f"{r['name']} ⚠ 无数据")
+                    else:
+                        icon = {"sunny": "☀", "clear": "☀", "partly cloudy": "⛅",
+                                "cloudy": "☁", "overcast": "☁", "mist": "🌫",
+                                "fog": "🌫", "rain": "🌧", "light rain": "🌦",
+                                "heavy rain": "🌧", "thunder": "⛈", "snow": "❄",
+                                "light snow": "🌨", "patchy rain": "🌦"}.get(r.get("desc", "").lower(), "🌤")
+                        parts.append(f"{icon} {r['name']} {r['temp']}°C")
+                has_bad.set(_bad)
+                dlg.after(0, lambda: preview_lbl.configure(text="  |  ".join(parts) if parts else "无数据"))
+            except Exception:
+                dlg.after(0, lambda: preview_lbl.configure(text="获取失败"))
+
+        threading.Thread(target=_fetch, daemon=True).start()
+
+    refresh_btn.bind("<Button-1>", lambda e: _refresh_preview())
+
+    # Swap order checkbox
+    swap_var = tk.BooleanVar(value=settings.get("weather_swap_order", False))
+    swap_frame = tk.Frame(dlg_frame, bg=COLORS["surface"])
+    swap_frame.pack(fill=tk.X, padx=16, pady=(2, 2))
+    tk.Checkbutton(
+        swap_frame, text="交换城市顺序", variable=swap_var,
+        bg=COLORS["surface"], activebackground=COLORS["surface"],
+        selectcolor=COLORS["input_bg"], fg=COLORS["text"],
+        font=FONT_SMALL).pack(side=tk.LEFT)
+
+    def save_into(target):
+        home = home_var.get().strip()
+        target["weather_home_city"] = home if home else "合肥"
+        target["weather_enabled"] = True
+        # Manual city override
+        manual = manual_var.get().strip()
+        target["weather_manual_city"] = manual
+        target.pop("weather_cities", None)
+        target.pop("weather_names", None)
+        target["weather_swap_order"] = swap_var.get()
+        target.pop("weather_city", None)
+        target.pop("weather_extras", None)
+        # Save API Key
+        key = api_key_var.get().strip()
+        if key:
+            target["weather_api_key"] = key
+        return target
+
+    return save_into
+
+
+
+def _refresh_weather(parent):
+    """Try to refresh weather display on the parent window."""
+    try:
+        cb = getattr(parent, '_weather_refresh_cb', None)
+        if cb:
+            cb()
+    except Exception:
+        pass
+
+
 def show_settings_dialog(parent):
     """Show settings dialog. Applies changes immediately on save."""
     settings = load_settings()
@@ -20,7 +150,7 @@ def show_settings_dialog(parent):
     dlg.resizable(False, False)
     dlg.transient(parent)
 
-    dlg_w, dlg_h = 360, 290
+    dlg_w, dlg_h = 380, 480
     dlg.update_idletasks()
     root_rx = parent.winfo_rootx()
     root_ry = parent.winfo_rooty()
@@ -108,9 +238,21 @@ def show_settings_dialog(parent):
         lbl.unbind("<Button-1>")
         lbl.bind("<Button-1>", lambda e, v=val: on_close_click(e, v))
 
+    # ── weather section ──
+    sep = tk.Frame(dlg, bg=COLORS["surface"], height=1,
+                   highlightbackground=COLORS["card_border"], highlightthickness=1)
+    sep.pack(fill=tk.X, padx=16, pady=(8, 4))
+
+    weather_frame = tk.Frame(dlg, bg=COLORS["surface"])
+    weather_frame.pack(fill=tk.X, padx=0, pady=0)
+    tk.Label(weather_frame, text="☀ 天气配置", fg=COLORS["accent"],
+             bg=COLORS["surface"], font=FONT_SMALL).pack(anchor=tk.W, padx=16)
+
+    weather_save = _build_weather_section(weather_frame, settings)
+
     # bottom buttons
     btn_frame = tk.Frame(dlg, bg=COLORS["surface"])
-    btn_frame.pack(fill=tk.X, padx=16, pady=(14, 16))
+    btn_frame.pack(fill=tk.X, padx=16, pady=(10, 16))
 
     def do_cancel():
         dlg.destroy()
@@ -122,14 +264,24 @@ def show_settings_dialog(parent):
     cancel_btn.bind("<Button-1>", lambda e: do_cancel())
 
     def do_save():
-        settings["autostart"] = auto_var.get()
-        settings["close_action"] = close_var.get()
-        save_settings(settings)
-        if settings["autostart"]:
-            set_autostart()
-        else:
-            remove_autostart()
-        dlg.destroy()
+        try:
+            settings["autostart"] = auto_var.get()
+            settings["close_action"] = close_var.get()
+            weather_save(settings)  # 直接修改 settings 字典，无需重新赋值
+            save_settings(settings)
+            if settings["autostart"]:
+                set_autostart()
+            else:
+                remove_autostart()
+        except Exception as e:
+            messagebox.showerror("保存失败", f"设置保存出错:\n{e}", parent=dlg)
+        finally:
+            dlg.destroy()
+            # 通知主窗口刷新天气显示
+            try:
+                parent.after(500, lambda: _refresh_weather(parent))
+            except Exception:
+                pass
 
     save_btn = tk.Label(btn_frame, text="保存", fg=COLORS["accent"],
                         bg=COLORS["surface"], font=FONT_TITLE,
