@@ -328,8 +328,13 @@ def format_recurring_display(recurring):
 
 
 def get_alert_page_indices():
-    """Return list of page indices that have at least one un-done task
-    whose due time has passed (drives red tab highlighting)."""
+    """Return list of page indices whose recurring reminders just became due.
+
+    Only recurring tasks (每周/每两周/每月/每年) inside the 60s notification
+    window count — long-overdue backlog and one-off tasks never light up.
+    """
+    from core.reminder_service import should_reset_recurring_after_notify
+
     ws = load_workspace()
     now = datetime.now()
     result = []
@@ -337,11 +342,14 @@ def get_alert_page_indices():
         for t in page["tasks"]:
             if t.get("done") or not t.get("due"):
                 continue
+            if not should_reset_recurring_after_notify(t):
+                continue
             try:
                 due_dt = datetime.fromisoformat(t["due"])
             except Exception:
                 continue
-            if due_dt <= now:
+            delta = (now - due_dt).total_seconds()
+            if 0 <= delta < 60:
                 result.append(i)
                 break
     return result

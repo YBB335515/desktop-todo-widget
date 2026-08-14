@@ -1312,7 +1312,9 @@ class DesktopTodoWidget:
             text_fg = COLORS["text_secondary"] if t["done"] else COLORS["text"]
             text_font = ("Microsoft YaHei UI", 10, "overstrike") if t["done"] else ("Microsoft YaHei UI", 10)
 
-            # Red highlight for overdue recurring tasks
+            # Red highlight: only recurring tasks (每周/每两周/每月/每年) at the
+            # moment they become due — within the 60s notification window.
+            # Long-overdue tasks stay normal; the [已过期] badge handles them.
             is_due_recurring = False
             rec = t.get("recurring", "")
             if rec and not t.get("done") and should_reset_recurring_after_notify(t):
@@ -1320,7 +1322,8 @@ class DesktopTodoWidget:
                 if due_str:
                     try:
                         due_dt = datetime.fromisoformat(due_str)
-                        if due_dt <= datetime.now():
+                        delta = (datetime.now() - due_dt).total_seconds()
+                        if 0 <= delta < 60:
                             is_due_recurring = True
                     except Exception:
                         pass
