@@ -1,59 +1,69 @@
 # 桌面待办小组件
 
-悬浮在桌面上的待办事项小组件，像手机桌面小组件一样随时查看和编辑。
+悬浮在桌面上的待办事项小组件（Python + Tkinter），像手机桌面小组件一样随时查看和编辑。
+支持多页面工作簿、自然语言提醒、循环提醒、语音输入、天气速报。
 
 ## 功能
 
-- 始终置顶悬浮窗，拖拽移动，一键收起
-- 添加 / 编辑 / 删除待办事项
-- 设置提醒时间（支持自然语言：明天15:00、后天9:30）
-- 桌面右下角弹窗提醒
-- 倒计时精确到秒
-- 双击任务直接编辑内容和时间
-- 暗色主题
+- **多页面**：底部页签切换（类似 Excel），右键页签可重命名/删除，双击也可重命名
+- **提醒**：自然语言设置（今天18:00、明天15:00、下个月1号 9:00、每周五 9:00…），到点右下角弹窗，可延迟 5/10/30 分钟
+- **循环提醒**：每月NN号、每年M月D号、每周X、每两周X，点完成自动顺延到下一期
+- **跨页飘红**：定时任务到期后，任务和它所在页面的页签会变红，直到点完成顺延后才恢复；当前正在看的页面页签不变红
+- **语音输入**：🎤 按钮说话添加任务，三级引擎降级：Vosk（离线）→ Google → Windows SAPI
+- **天气栏**：双城市天气速报 + AI 恶劣天气提醒
+- 倒计时精确到秒、任务过期徽标、暗色主题、开机自启、托盘图标、自动更新
 
-## 使用方式
-
-### 方式一：直接运行 exe（推荐）
-
-下载 `待办小组件.exe`，双击运行。**无需安装 Python 或任何依赖。**
-
-### 方式二：Python 运行
+## 运行
 
 ```bash
-# 安装依赖（仅需 Python 自带 tkinter，无需额外安装）
-python desktop_todo_widget.py
+# 直接双击打包好的 exe（无需安装 Python）
+dist/桌面待办.exe
 
-# 或无黑窗口运行
-pythonw desktop_todo_widget.py
+# 从源码运行
+python main.py
 ```
 
-双击 `启动待办小组件.bat` 也可启动。
-
-## 命令行工具
+## 打包 exe
 
 ```bash
-# 添加任务
-python todo.py add "买菜"
-
-# 查看任务
-python todo.py list
-
-# 标记完成
-python todo.py done 1
-
-# 设置提醒
-python todo.py remind 1 明天15:00
-
-# 删除任务
-python todo.py delete 1
+# 先递增构建号（两位数，如 09 → 10）
+python ../.claude/skills/post-edit/scripts/bump_version.py
+# 打包（需先关闭正在运行的"桌面待办.exe"）
+python -m PyInstaller --noconfirm build/desktop_todo_widget.spec
 ```
 
-## 构建 exe
+版本号 = `v1.0.<BUILD_NO>`，当前 **v1.0.11**。
 
-```bash
-pip install pyinstaller
-python -m PyInstaller --onefile --noconsole --name "待办小组件" desktop_todo_widget.py
+## 目录结构
+
+```
+desktop-todo-widget/
+├── main.py                  # 入口
+├── core/                    # 纯逻辑：任务管理、提醒、语音、自然语言解析
+├── ui/                      # Tkinter 界面：主窗口、编辑对话框、弹窗、托盘
+├── utils/                   # 常量/主题色、注册表、更新检查
+├── config/                  # 设置持久化
+├── data/                    # 用户数据（tasks.json / settings.json，勿提交）
+└── build/desktop_todo_widget.spec   # PyInstaller 配置
 ```
 
-exe 生成在 `dist/` 目录。
+## 循环提醒格式（tasks.json）
+
+| 格式 | 含义 |
+|------|------|
+| `monthly:10` | 每月 10 号 |
+| `yearly:3-15` | 每年 3 月 15 号 |
+| `weekly:4` | 每周五（0=周一 … 6=周日） |
+| `biweekly:4` | 每两周周五 |
+
+## 更新记录
+
+- **v1.0.11** — 定时任务到期红色保持到"完成顺延"才消失；修复同一提醒重复弹多个窗
+- **v1.0.10** — 到期飘红仅限定时任务提醒窗口，已过期任务不飘红
+- **v1.0.09** — 新增每周/每两周循环提醒、跨页页签变红提醒、右键重命名页面
+- 更早版本 — 语音输入（三级引擎）、天气栏、多页面工作簿、托盘/自启动等
+
+## 注意事项
+
+- `data/tasks.json`、`data/settings.json` 是用户数据，**不要提交到 git**
+- 打包前先关闭正在运行的"桌面待办.exe"
