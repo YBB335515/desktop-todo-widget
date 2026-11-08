@@ -4,7 +4,7 @@ import os
 from calendar import monthrange
 from datetime import datetime, timedelta
 
-from utils.common_utils import BASE_DIR, DATA_DIR
+from utils.common_utils import BASE_DIR, DATA_DIR, migrate_legacy_data
 
 TASKS_FILE = os.path.join(DATA_DIR, "tasks.json")
 
@@ -13,7 +13,8 @@ _WEEKDAY_CN = ["一", "二", "三", "四", "五", "六", "日"]
 
 
 def _migrate_data():
-    """Migrate tasks.json from old location to data/ directory."""
+    """Migrate tasks.json from old location to the shared data directory."""
+    migrate_legacy_data()
     old_path = os.path.join(BASE_DIR, "tasks.json")
     if os.path.isfile(old_path) and not os.path.isfile(TASKS_FILE):
         try:

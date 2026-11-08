@@ -65,5 +65,6 @@ desktop-todo-widget/
 
 ## 注意事项
 
-- `data/tasks.json`、`data/settings.json` 是用户数据，**不要提交到 git**
+- 用户数据统一存放在 `%LOCALAPPDATA%\DesktopTodoWidget\data`（源码和 exe 共用，项目搬家不会丢）；
+- 项目内的 `data/` 只是旧版遗留备份，**不要提交到 git**
 - 打包前先关闭正在运行的"桌面待办.exe"

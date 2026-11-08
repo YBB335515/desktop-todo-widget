@@ -2,7 +2,7 @@
 import json
 import os
 
-from utils.common_utils import BASE_DIR, DATA_DIR
+from utils.common_utils import BASE_DIR, DATA_DIR, migrate_legacy_data
 
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 
@@ -25,7 +25,8 @@ DEFAULT_SETTINGS = {
 
 
 def _migrate_settings():
-    """Migrate settings.json from old location to data/ directory."""
+    """Migrate settings.json from old location to the shared data directory."""
+    migrate_legacy_data()
     old_path = os.path.join(BASE_DIR, "settings.json")
     if os.path.isfile(old_path) and not os.path.isfile(SETTINGS_FILE):
         try:

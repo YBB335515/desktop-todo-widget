@@ -9,8 +9,31 @@ else:
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 FROZEN = getattr(sys, 'frozen', False)
-DATA_DIR = os.path.join(BASE_DIR, "data")
+
+# 用户数据统一存放在 %LOCALAPPDATA%\DesktopTodoWidget\data —— 与源码/exe 所在
+# 目录无关：exe 双击、开机自启、源码运行读写的是同一份数据，项目搬家也不会丢。
+USER_DIR = os.path.join(
+    os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+    "DesktopTodoWidget")
+DATA_DIR = os.path.join(USER_DIR, "data")
 VOICE_LOG_FILE = os.path.join(DATA_DIR, "_voice_error.log")
+
+
+def migrate_legacy_data():
+    """把旧版 BASE_DIR/data 下的数据复制到统一数据目录（幂等，只补缺失文件）。"""
+    legacy = os.path.join(BASE_DIR, "data")
+    if os.path.normcase(os.path.abspath(legacy)) == os.path.normcase(os.path.abspath(DATA_DIR)):
+        return
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        for name in ("tasks.json", "settings.json"):
+            src = os.path.join(legacy, name)
+            dst = os.path.join(DATA_DIR, name)
+            if os.path.isfile(src) and not os.path.isfile(dst):
+                import shutil
+                shutil.copy2(src, dst)
+    except Exception:
+        pass
 
 COLORS = {
     "bg": "#0f1a2e",
